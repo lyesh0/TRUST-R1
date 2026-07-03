@@ -80,9 +80,12 @@ class RewardManager():
 
             score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth, format_score=self.format_score)
             if self.trust_reward_config is not None and self.trust_reward_config.get('enabled', False):
+                trace_summary = data_item.non_tensor_batch.get('trust_r1_trace_summary', {})
                 trust_result = compute_trust_reward(
                     solution_str=sequences_str,
                     ground_truth=ground_truth,
+                    had_fault=bool(trace_summary.get('had_fault', False)) if isinstance(trace_summary, dict) else False,
+                    changed_query_after_fault=bool(trace_summary.get('changed_query_after_fault', False)) if isinstance(trace_summary, dict) else False,
                     config=RewardConfig.from_mapping(self.trust_reward_config),
                 )
                 score = trust_result.reward.total

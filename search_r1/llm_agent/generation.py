@@ -2,6 +2,7 @@ import torch
 import re
 from collections import defaultdict
 import os
+import numpy as np
 from typing import List, Dict, Any, Tuple
 from dataclasses import dataclass
 from .tensor_helper import TensorHelper, TensorConfig
@@ -325,8 +326,10 @@ class LLMGenerationManager:
         meta_info['active_mask'] = active_mask.tolist()
         meta_info['valid_action_stats'] = valid_action_stats.tolist()
         meta_info['valid_search_stats'] = valid_search_stats.tolist()
+        trace_summary = self.trace_recorder.to_summary() if self.trace_recorder else []
         meta_info['trust_r1_fault_events'] = self.fault_events
         meta_info['trust_r1_rollout_traces'] = self.trace_recorder.to_meta() if self.trace_recorder else []
+        meta_info['trust_r1_trace_summary'] = trace_summary
 
         print("ACTIVE_TRAJ_NUM:", active_num_list)
         
@@ -358,10 +361,15 @@ class LLMGenerationManager:
         final_output['position_ids'] = self.tensor_fn.create_position_ids(
             final_output['attention_mask']
         )
-        
-        final_output = DataProto.from_dict(final_output)
+
+        non_tensors = {}
+        trace_summary = meta_info.get('trust_r1_trace_summary')
+        if trace_summary is not None:
+            non_tensors['trust_r1_trace_summary'] = np.array(trace_summary, dtype=object)
+
+        final_output = DataProto.from_dict(tensors=final_output, non_tensors=non_tensors)
         final_output.meta_info.update(meta_info)
-        
+
         return final_output
 
     def execute_predictions(self, predictions: List[str], pad_token: str, active_mask=None, do_search=True) -> List[str]:

@@ -34,6 +34,46 @@ def test_rollout_trace_recorder_groups_searches_by_sample_index():
     assert meta[2]["searches"][0]["step"] == 5
 
 
+def test_rollout_trace_recorder_builds_summary():
+    recorder = RolloutTraceRecorder(batch_size=1)
+    recorder.record_searches(
+        sample_indices=[0],
+        queries=["same query"],
+        events=[event("same query", "empty")],
+        step=0,
+    )
+    recorder.record_searches(
+        sample_indices=[0],
+        queries=["new query"],
+        events=[event("new query", "clean")],
+        step=1,
+    )
+    summary = recorder.to_summary()[0]
+    assert summary["had_fault"] is True
+    assert summary["searched_again_after_fault"] is True
+    assert summary["changed_query_after_fault"] is True
+    assert summary["search_count"] == 2
+    assert summary["duplicate_query_count"] == 0
+    assert summary["fault_types"] == ["empty"]
+
+
+def test_rollout_trace_summary_counts_duplicate_queries():
+    recorder = RolloutTraceRecorder(batch_size=1)
+    recorder.record_searches(
+        sample_indices=[0],
+        queries=["same query"],
+        events=[event("same query", "clean")],
+        step=0,
+    )
+    recorder.record_searches(
+        sample_indices=[0],
+        queries=["same   query"],
+        events=[event("same query", "clean")],
+        step=1,
+    )
+    assert recorder.to_summary()[0]["duplicate_query_count"] == 1
+
+
 def test_rollout_trace_recorder_validates_lengths():
     recorder = RolloutTraceRecorder(batch_size=1)
     with pytest.raises(ValueError):
