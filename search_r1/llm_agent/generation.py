@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from .tensor_helper import TensorHelper, TensorConfig
 from verl import DataProto
 from verl.utils.tracking import Tracking
+from trust_r1.config import FaultConfig
+from trust_r1.search_adapter import apply_retrieval_faults
 import shutil
 import requests
 
@@ -14,13 +16,14 @@ import requests
 class GenerationConfig:
     max_turns: int
     max_start_length: int
-    max_prompt_length: int 
+    max_prompt_length: int
     max_response_length: int
     max_obs_length: int
     num_gpus: int
     no_think_rl: bool=False
     search_url: str = None
     topk: int = 3
+    retrieval_fault: FaultConfig | None = None
 
 class LLMGenerationManager:
     def __init__(
@@ -34,6 +37,9 @@ class LLMGenerationManager:
         self.actor_rollout_wg = actor_rollout_wg
         self.config = config
         self.is_validation = is_validation
+        self.retrieval_fault = config.retrieval_fault or FaultConfig(topk=config.topk)
+        self.search_step = 0
+        self.fault_events = []
 
         self.tensor_fn = TensorHelper(TensorConfig(
             pad_token_id=tokenizer.pad_token_id,
@@ -219,7 +225,9 @@ class LLMGenerationManager:
 
     def run_llm_loop(self, gen_batch, initial_input_ids: torch.Tensor) -> Tuple[Dict, Dict]:
         """Run main LLM generation loop."""
-        
+        self.search_step = 0
+        self.fault_events = []
+
         original_left_side = {'input_ids': initial_input_ids[:, -self.config.max_start_length:]}
         original_right_side = {'responses': initial_input_ids[:, []], 'responses_with_info_mask': initial_input_ids[:, []]}
         
@@ -313,7 +321,8 @@ class LLMGenerationManager:
         meta_info['active_mask'] = active_mask.tolist()
         meta_info['valid_action_stats'] = valid_action_stats.tolist()
         meta_info['valid_search_stats'] = valid_search_stats.tolist()
-        
+        meta_info['trust_r1_fault_events'] = self.fault_events
+
         print("ACTIVE_TRAJ_NUM:", active_num_list)
         
         return self._compose_final_output(original_left_side, original_right_side, meta_info)
@@ -443,8 +452,17 @@ If I want to give the final answer, I should put the answer between <answer> and
         Returns:
             search results which is concatenated into a string
         """
+        queries = queries or []
         results = self._batch_search(queries)['result']
-        
+        results, events = apply_retrieval_faults(
+            queries=queries,
+            batch_results=results,
+            config=self.retrieval_fault,
+            step=self.search_step,
+        )
+        self.search_step += len(queries)
+        self.fault_events.extend(event.to_dict() for event in events)
+
         return [self._passages2string(result) for result in results]
 
     def _batch_search(self, queries):

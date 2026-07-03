@@ -149,6 +149,12 @@ retriever:
   url: "http://127.0.0.1:8000/retrieve"
   topk: 3
 
+retrieval_fault:
+  enabled: false
+  mode: clean
+  fault_rate: 0.0
+  seed: 0
+
 algorithm:
   gamma: 1.0
   lam: 1.0

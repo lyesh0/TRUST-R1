@@ -41,6 +41,7 @@ from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seql
 
 import re
 from search_r1.llm_agent.generation import LLMGenerationManager, GenerationConfig
+from trust_r1.search_adapter import fault_config_from_mapping
 
 WorkerType = Type[Worker]
 
@@ -450,8 +451,12 @@ class RayPPOTrainer(object):
             max_obs_length=self.config.data.max_obs_length,
             num_gpus=self.config.trainer.n_gpus_per_node * self.config.trainer.nnodes,
             no_think_rl=self.config.algorithm.no_think_rl,
-            search_url = self.config.retriever.url,
-            topk = self.config.retriever.topk,
+            search_url=self.config.retriever.url,
+            topk=self.config.retriever.topk,
+            retrieval_fault=fault_config_from_mapping(
+                self.config.get('retrieval_fault', None),
+                topk=self.config.retriever.topk,
+            ),
         )
 
         # Agent config preparation
@@ -681,8 +686,12 @@ class RayPPOTrainer(object):
             max_obs_length=self.config.data.max_obs_length,
             num_gpus=self.config.trainer.n_gpus_per_node * self.config.trainer.nnodes,
             no_think_rl=self.config.algorithm.no_think_rl,
-            search_url = self.config.retriever.url,
-            topk = self.config.retriever.topk,
+            search_url=self.config.retriever.url,
+            topk=self.config.retriever.topk,
+            retrieval_fault=fault_config_from_mapping(
+                self.config.get('retrieval_fault', None),
+                topk=self.config.retriever.topk,
+            ),
         )
 
         generation_manager = LLMGenerationManager(
