@@ -8,6 +8,7 @@ from .tensor_helper import TensorHelper, TensorConfig
 from verl import DataProto
 from verl.utils.tracking import Tracking
 from trust_r1.config import FaultConfig
+from trust_r1.rollout_logging import RolloutTraceRecorder
 from trust_r1.search_adapter import apply_retrieval_faults
 import shutil
 import requests
@@ -40,6 +41,8 @@ class LLMGenerationManager:
         self.retrieval_fault = config.retrieval_fault or FaultConfig(topk=config.topk)
         self.search_step = 0
         self.fault_events = []
+        self.trace_recorder = None
+        self.current_search_sample_indices = []
 
         self.tensor_fn = TensorHelper(TensorConfig(
             pad_token_id=tokenizer.pad_token_id,
@@ -227,6 +230,7 @@ class LLMGenerationManager:
         """Run main LLM generation loop."""
         self.search_step = 0
         self.fault_events = []
+        self.trace_recorder = RolloutTraceRecorder(batch_size=gen_batch.batch['input_ids'].shape[0])
 
         original_left_side = {'input_ids': initial_input_ids[:, -self.config.max_start_length:]}
         original_right_side = {'responses': initial_input_ids[:, []], 'responses_with_info_mask': initial_input_ids[:, []]}
@@ -322,6 +326,7 @@ class LLMGenerationManager:
         meta_info['valid_action_stats'] = valid_action_stats.tolist()
         meta_info['valid_search_stats'] = valid_search_stats.tolist()
         meta_info['trust_r1_fault_events'] = self.fault_events
+        meta_info['trust_r1_rollout_traces'] = self.trace_recorder.to_meta() if self.trace_recorder else []
 
         print("ACTIVE_TRAJ_NUM:", active_num_list)
         
@@ -377,6 +382,10 @@ class LLMGenerationManager:
         next_obs, dones, valid_action, is_search = [], [], [], []
         
         search_queries = [content for action, content in zip(cur_actions, contents) if action == 'search']
+        self.current_search_sample_indices = [
+            idx for idx, action in enumerate(cur_actions)
+            if action == 'search'
+        ]
         if do_search:
             search_results = self.batch_search(search_queries)
             assert len(search_results) == sum([1 for action in cur_actions if action == 'search'])
@@ -454,14 +463,22 @@ If I want to give the final answer, I should put the answer between <answer> and
         """
         queries = queries or []
         results = self._batch_search(queries)['result']
+        search_step = self.search_step
         results, events = apply_retrieval_faults(
             queries=queries,
             batch_results=results,
             config=self.retrieval_fault,
-            step=self.search_step,
+            step=search_step,
         )
         self.search_step += len(queries)
         self.fault_events.extend(event.to_dict() for event in events)
+        if self.trace_recorder is not None:
+            self.trace_recorder.record_searches(
+                sample_indices=self.current_search_sample_indices,
+                queries=queries,
+                events=events,
+                step=search_step,
+            )
 
         return [self._passages2string(result) for result in results]
 

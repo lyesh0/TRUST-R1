@@ -4,6 +4,7 @@ from .config import FaultConfig, RewardConfig
 from .faults import FaultEvent, RetrievalFaultInjector
 from .metrics import TrajectoryMetrics, aggregate_trajectory_metrics
 from .rewards import RewardBreakdown, compute_reward_breakdown
+from .rollout_logging import RolloutSearchTrace, RolloutTrace, RolloutTraceRecorder
 from .trajectory import SearchTurn, Trajectory, TrajectoryJsonlWriter
 
 __all__ = [
@@ -12,6 +13,9 @@ __all__ = [
     "RetrievalFaultInjector",
     "RewardBreakdown",
     "RewardConfig",
+    "RolloutSearchTrace",
+    "RolloutTrace",
+    "RolloutTraceRecorder",
     "SearchTurn",
     "Trajectory",
     "TrajectoryJsonlWriter",
