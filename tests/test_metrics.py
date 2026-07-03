@@ -1,0 +1,39 @@
+from trust_r1.metrics import aggregate_trajectory_metrics
+from trust_r1.trajectory import SearchTurn, Trajectory
+
+
+def make_trajectory(sample_id, correct, turns):
+    trajectory = Trajectory(run_id="run", sample_id=sample_id, question="q", is_correct=correct)
+    for turn in turns:
+        trajectory.add_turn(turn)
+    return trajectory
+
+
+def test_aggregate_trajectory_metrics():
+    trajectories = [
+        make_trajectory(
+            "s1",
+            True,
+            [
+                SearchTurn(step=1, action="search", query="first", fault_enabled=True, fault_type="empty"),
+                SearchTurn(step=2, action="search", query="second"),
+            ],
+        ),
+        make_trajectory(
+            "s2",
+            False,
+            [
+                SearchTurn(step=1, action="search", query="same"),
+                SearchTurn(step=2, action="search", query="same"),
+            ],
+        ),
+    ]
+
+    metrics = aggregate_trajectory_metrics(trajectories)
+    assert metrics.count == 2
+    assert metrics.accuracy == 0.5
+    assert metrics.fault_rate == 0.5
+    assert metrics.average_search_calls == 2.0
+    assert metrics.query_rewrite_rate == 1.0
+    assert metrics.duplicate_query_rate == 0.5
+    assert metrics.first_failure_recovery_rate == 1.0
