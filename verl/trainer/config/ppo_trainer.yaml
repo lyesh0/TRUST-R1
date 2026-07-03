@@ -155,6 +155,14 @@ retrieval_fault:
   fault_rate: 0.0
   seed: 0
 
+trust_reward:
+  enabled: false
+  answer_weight: 1.0
+  format_weight: 0.0
+  recovery_weight: 0.2
+  duplicate_penalty_weight: 0.1
+  invalid_penalty_weight: 0.0
+
 algorithm:
   gamma: 1.0
   lam: 1.0

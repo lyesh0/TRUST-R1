@@ -19,6 +19,8 @@ from verl import DataProto
 import torch
 from verl.utils.reward_score import qa_em
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
+from trust_r1.config import RewardConfig
+from trust_r1.reward_adapter import compute_trust_reward
 import re
 import numpy as np
 
@@ -33,10 +35,11 @@ class RewardManager():
     """The reward manager.
     """
 
-    def __init__(self, tokenizer, num_examine, format_score=0.) -> None:
+    def __init__(self, tokenizer, num_examine, format_score=0., trust_reward_config=None) -> None:
         self.tokenizer = tokenizer
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
         self.format_score = format_score
+        self.trust_reward_config = trust_reward_config
 
     def __call__(self, data: DataProto):
         """We will expand this function gradually based on the available datasets"""
@@ -76,6 +79,13 @@ class RewardManager():
             compute_score_fn = _select_rm_score_fn(data_source)
 
             score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth, format_score=self.format_score)
+            if self.trust_reward_config is not None and self.trust_reward_config.get('enabled', False):
+                trust_result = compute_trust_reward(
+                    solution_str=sequences_str,
+                    ground_truth=ground_truth,
+                    config=RewardConfig.from_mapping(self.trust_reward_config),
+                )
+                score = trust_result.reward.total
 
             reward_tensor[i, valid_response_length - 1] = score
             # all_scores.append(score)
@@ -180,10 +190,11 @@ def main_task(config):
         role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)
         mapping[Role.RewardModel] = global_pool_id
 
-    reward_fn = RewardManager(tokenizer=tokenizer, num_examine=0)
+    trust_reward_config = config.get('trust_reward', None)
+    reward_fn = RewardManager(tokenizer=tokenizer, num_examine=0, trust_reward_config=trust_reward_config)
 
     # Note that we always use function-based RM for validation
-    val_reward_fn = RewardManager(tokenizer=tokenizer, num_examine=1)
+    val_reward_fn = RewardManager(tokenizer=tokenizer, num_examine=1, trust_reward_config=trust_reward_config)
 
     resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
     trainer = RayPPOTrainer(config=config,
