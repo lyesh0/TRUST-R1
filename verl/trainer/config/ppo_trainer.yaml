@@ -163,6 +163,12 @@ trust_reward:
   duplicate_penalty_weight: 0.1
   invalid_penalty_weight: 0.0
 
+trust_r1_logging:
+  enabled: false
+  output_dir: null
+  sample_limit_per_call: 32
+  write_trajectories: false
+
 algorithm:
   gamma: 1.0
   lam: 1.0
@@ -183,7 +189,7 @@ trainer:
   experiment_name: gsm8k
   logger: [ 'console', 'wandb' ]
   nnodes: 1
-  n_gpus_per_node: 8
+  n_gpus_per_node: 4
   save_freq: -1
   test_freq: -1
   critic_warmup: 0

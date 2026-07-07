@@ -58,7 +58,8 @@ git push
 [ ] config 文件路径正确
 [ ] 数据路径存在
 [ ] 模型路径存在
-[ ] index / retriever 可用
+[ ] 4 卡训练配置一致：`trainer.n_gpus_per_node=4`，`CUDA_VISIBLE_DEVICES=0,1,2,3`
+[ ] index / retriever 可用；如 retriever 和训练同机运行，优先用 CPU retriever，避免占用训练 GPU
 [ ] fault seed / train seed 已写入配置
 [ ] 已跑过 2-step dry run
 [ ] 输出目录是新的 run_id

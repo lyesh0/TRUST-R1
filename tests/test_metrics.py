@@ -1,4 +1,4 @@
-from trust_r1.metrics import aggregate_trajectory_metrics
+from trust_r1.metrics import aggregate_trace_summary_metrics, aggregate_trajectory_metrics
 from trust_r1.trajectory import SearchTurn, Trajectory
 
 
@@ -37,3 +37,36 @@ def test_aggregate_trajectory_metrics():
     assert metrics.query_rewrite_rate == 1.0
     assert metrics.duplicate_query_rate == 0.5
     assert metrics.first_failure_recovery_rate == 1.0
+
+
+def test_aggregate_trace_summary_metrics():
+    metrics = aggregate_trace_summary_metrics([
+        {
+            "search_count": 2,
+            "had_fault": True,
+            "searched_again_after_fault": True,
+            "changed_query_after_fault": True,
+            "duplicate_query_count": 0,
+            "fault_types": ["empty"],
+        },
+        {
+            "search_count": 1,
+            "had_fault": False,
+            "searched_again_after_fault": False,
+            "changed_query_after_fault": False,
+            "duplicate_query_count": 1,
+            "fault_types": [],
+        },
+    ])
+    assert metrics["trust_r1/trace_count"] == 2.0
+    assert metrics["trust_r1/search_count_mean"] == 1.5
+    assert metrics["trust_r1/fault_rate"] == 0.5
+    assert metrics["trust_r1/searched_again_after_fault_rate"] == 1.0
+    assert metrics["trust_r1/changed_query_after_fault_rate"] == 1.0
+    assert metrics["trust_r1/duplicate_query_rate"] == 0.5
+    assert metrics["trust_r1/duplicate_query_count_mean"] == 0.5
+    assert metrics["trust_r1/fault_type/empty_count"] == 1.0
+
+
+def test_aggregate_trace_summary_metrics_empty_input():
+    assert aggregate_trace_summary_metrics([]) == {}

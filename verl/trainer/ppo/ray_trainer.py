@@ -41,6 +41,7 @@ from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seql
 
 import re
 from search_r1.llm_agent.generation import LLMGenerationManager, GenerationConfig
+from trust_r1.metrics import aggregate_trace_summary_metrics
 from trust_r1.search_adapter import fault_config_from_mapping
 
 WorkerType = Type[Worker]
@@ -159,6 +160,13 @@ def reduce_metrics(metrics: dict):
     for key, val in metrics.items():
         metrics[key] = np.mean(val)
     return metrics
+
+
+def compute_trust_r1_trace_metrics(batch: DataProto) -> dict:
+    summaries = batch.non_tensor_batch.get('trust_r1_trace_summary') if batch.non_tensor_batch else None
+    if summaries is None:
+        return {}
+    return aggregate_trace_summary_metrics(summaries.tolist() if hasattr(summaries, 'tolist') else summaries)
 
 
 def _compute_response_info(batch):
@@ -793,8 +801,11 @@ class RayPPOTrainer(object):
                             reward_tensor = self.rm_wg.compute_rm_score(batch)
                             batch = batch.union(reward_tensor)
 
+                        metrics.update(compute_trust_r1_trace_metrics(batch))
+
                         # we combine with rule-based rm
                         reward_tensor = self.reward_fn(batch)
+                        metrics.update(getattr(self.reward_fn, 'last_trust_reward_metrics', {}))
                         batch.batch['token_level_scores'] = reward_tensor
 
                         # compute rewards. apply_kl_penalty if available

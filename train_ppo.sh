@@ -1,7 +1,8 @@
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export DATA_DIR='data/nq_search'
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
+export DATA_DIR=${DATA_DIR:-'data/nq_search'}
 
-WAND_PROJECT='Search-R1'
+# Recommended TRUST-R1 entrypoint: scripts/run_trust_r1_experiments.sh
+WAND_PROJECT='TRUST-R1'
 
 export BASE_MODEL='meta-llama/Llama-3.2-3B'
 export EXPERIMENT_NAME=nq-search-r1-ppo-llama3.2-3b-em
@@ -74,7 +75,7 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     +trainer.val_only=false \
     +trainer.val_before_train=true \
     trainer.default_hdfs_dir=null \
-    trainer.n_gpus_per_node=8 \
+    trainer.n_gpus_per_node=4 \
     trainer.nnodes=1 \
     trainer.save_freq=100 \
     trainer.test_freq=50 \

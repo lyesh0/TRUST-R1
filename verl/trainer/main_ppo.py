@@ -15,6 +15,9 @@
 Note that we don't combine the main with ray_trainer as ray_trainer is used by other main.
 """
 
+from pathlib import Path
+import json
+
 from verl import DataProto
 import torch
 from verl.utils.reward_score import qa_em
@@ -35,11 +38,14 @@ class RewardManager():
     """The reward manager.
     """
 
-    def __init__(self, tokenizer, num_examine, format_score=0., trust_reward_config=None) -> None:
+    def __init__(self, tokenizer, num_examine, format_score=0., trust_reward_config=None, trust_logging_config=None) -> None:
         self.tokenizer = tokenizer
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
         self.format_score = format_score
         self.trust_reward_config = trust_reward_config
+        self.trust_logging_config = trust_logging_config or {}
+        self.last_trust_reward_metrics = {}
+        self._trajectory_write_count = 0
 
     def __call__(self, data: DataProto):
         """We will expand this function gradually based on the available datasets"""
@@ -49,8 +55,8 @@ class RewardManager():
             return data.batch['rm_scores']
 
         reward_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
-
-        # all_scores = []
+        self.last_trust_reward_metrics = {}
+        trust_reward_items = []
 
         already_print_data_sources = {}
 
@@ -79,8 +85,9 @@ class RewardManager():
             compute_score_fn = _select_rm_score_fn(data_source)
 
             score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth, format_score=self.format_score)
+            trace_summary = data_item.non_tensor_batch.get('trust_r1_trace_summary', {})
+            trust_result = None
             if self.trust_reward_config is not None and self.trust_reward_config.get('enabled', False):
-                trace_summary = data_item.non_tensor_batch.get('trust_r1_trace_summary', {})
                 trust_result = compute_trust_reward(
                     solution_str=sequences_str,
                     ground_truth=ground_truth,
@@ -89,9 +96,17 @@ class RewardManager():
                     config=RewardConfig.from_mapping(self.trust_reward_config),
                 )
                 score = trust_result.reward.total
+                trust_reward_items.append(trust_result)
+                self._maybe_write_trajectory(
+                    data_item=data_item,
+                    data_source=data_source,
+                    sequences_str=sequences_str,
+                    ground_truth=ground_truth,
+                    trace_summary=trace_summary,
+                    trust_result=trust_result,
+                )
 
             reward_tensor[i, valid_response_length - 1] = score
-            # all_scores.append(score)
 
             if data_source not in already_print_data_sources:
                 already_print_data_sources[data_source] = 0
@@ -99,15 +114,64 @@ class RewardManager():
             if already_print_data_sources[data_source] < self.num_examine:
                 already_print_data_sources[data_source] += 1
                 print(sequences_str)
-        
-        # print(f"[DEBUG] all_scores: {all_scores}")
-        # print(f"[DEBUG] all_scores shape: {np.array(all_scores).shape}")
-        # print(f"[DEBUG] all_scores mean: {np.mean(all_scores)}")
-        # print(f"[DEBUG] all_scores max: {np.max(all_scores)}")
-        # print(f"[DEBUG] all_scores min: {np.min(all_scores)}")
-        # print(f"[DEBUG] all_scores std: {np.std(all_scores)}")
+
+        self.last_trust_reward_metrics = self._build_trust_reward_metrics(trust_reward_items)
 
         return reward_tensor
+
+    def _build_trust_reward_metrics(self, trust_reward_items):
+        if not trust_reward_items:
+            return {}
+
+        def mean(values):
+            return float(np.mean(values)) if values else 0.0
+
+        reward_dicts = [item.reward.to_dict() for item in trust_reward_items]
+        return {
+            'trust_r1_reward/answer_mean': mean([item['answer'] for item in reward_dicts]),
+            'trust_r1_reward/format_mean': mean([item['format'] for item in reward_dicts]),
+            'trust_r1_reward/recovery_mean': mean([item['recovery'] for item in reward_dicts]),
+            'trust_r1_reward/duplicate_penalty_mean': mean([item['duplicate_penalty'] for item in reward_dicts]),
+            'trust_r1_reward/invalid_penalty_mean': mean([item['invalid_penalty'] for item in reward_dicts]),
+            'trust_r1_reward/total_mean': mean([item['total'] for item in reward_dicts]),
+            'trust_r1_reward/answer_correct_rate': mean([float(item.answer_correct) for item in trust_reward_items]),
+            'trust_r1_reward/evidence_recovered_rate': mean([float(item.evidence_recovered) for item in trust_reward_items]),
+            'trust_r1_reward/duplicate_query_count_mean': mean([item.duplicate_query_count for item in trust_reward_items]),
+        }
+
+    def _maybe_write_trajectory(self, *, data_item, data_source, sequences_str, ground_truth, trace_summary, trust_result):
+        if not self.trust_logging_config.get('enabled', False):
+            return
+        if not self.trust_logging_config.get('write_trajectories', False):
+            return
+        limit = int(self.trust_logging_config.get('sample_limit_per_call', 32) or 0)
+        if limit >= 0 and self._trajectory_write_count >= limit:
+            return
+        output_dir = self.trust_logging_config.get('output_dir')
+        if not output_dir:
+            return
+
+        path = Path(output_dir) / 'trajectories.jsonl'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        reward_model = data_item.non_tensor_batch.get('reward_model', {})
+        sample_id = data_item.non_tensor_batch.get('index', self._trajectory_write_count)
+        record = {
+            'sample_id': str(sample_id),
+            'data_source': str(data_source),
+            'gold_answer': ground_truth.get('target') if isinstance(ground_truth, dict) else ground_truth,
+            'final_answer': trust_result.parsed.answer,
+            'is_correct': trust_result.answer_correct,
+            'search_queries': trust_result.parsed.search_queries,
+            'information_block_count': len(trust_result.parsed.information_blocks),
+            'information_previews': [block[:240] for block in trust_result.parsed.information_blocks[:3]],
+            'trust_r1_trace_summary': trace_summary if isinstance(trace_summary, dict) else {},
+            'reward_breakdown': trust_result.reward.to_dict(),
+            'reward_model': reward_model,
+            'solution_preview': sequences_str[-2000:],
+        }
+        with path.open('a', encoding='utf-8') as f:
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
+        self._trajectory_write_count += 1
 
 
 import ray
@@ -194,10 +258,21 @@ def main_task(config):
         mapping[Role.RewardModel] = global_pool_id
 
     trust_reward_config = config.get('trust_reward', None)
-    reward_fn = RewardManager(tokenizer=tokenizer, num_examine=0, trust_reward_config=trust_reward_config)
+    trust_logging_config = config.get('trust_r1_logging', None)
+    reward_fn = RewardManager(
+        tokenizer=tokenizer,
+        num_examine=0,
+        trust_reward_config=trust_reward_config,
+        trust_logging_config=trust_logging_config,
+    )
 
     # Note that we always use function-based RM for validation
-    val_reward_fn = RewardManager(tokenizer=tokenizer, num_examine=1, trust_reward_config=trust_reward_config)
+    val_reward_fn = RewardManager(
+        tokenizer=tokenizer,
+        num_examine=1,
+        trust_reward_config=trust_reward_config,
+        trust_logging_config=trust_logging_config,
+    )
 
     resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
     trainer = RayPPOTrainer(config=config,
