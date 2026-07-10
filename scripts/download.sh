@@ -1,6 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
 
-save_path=/home/peterjin/debug_cache
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SEARCH_DATA_ROOT="${SEARCH_DATA_ROOT:-/root/autodl-fs}"
 
-python download.py --savepath $savepath
-
-cat $save_path/part_* > e5_Flat.index
+python "$REPO_ROOT/scripts/download.py" --data-root "$SEARCH_DATA_ROOT"

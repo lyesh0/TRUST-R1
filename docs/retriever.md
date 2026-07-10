@@ -55,12 +55,16 @@ If you have sufficient GPU, we would recommend the flat indexing variant below, 
 
 Flat indexing conducts exact embedding match, which is slow but very accurate. To make it efficient enough to support online RL, we would recommend enable **GPU** usage by ```--faiss_gpu```.
 
-(1) Download the indexing and corpus.
+(1) Download and prepare the indexing and corpus. On AutoDL, keep shared retriever assets under `/root/autodl-fs`.
 ```bash
-save_path=/the/path/to/save
-python scripts/download.py --save_path $save_path
-cat $save_path/part_* > $save_path/e5_Flat.index
-gzip -d $save_path/wiki-18.jsonl.gz
+SEARCH_DATA_ROOT=/root/autodl-fs
+python scripts/download.py --data-root "$SEARCH_DATA_ROOT"
+```
+
+This creates:
+```bash
+$SEARCH_DATA_ROOT/indexes/wiki-18/e5_Flat.index
+$SEARCH_DATA_ROOT/data/wiki-18.jsonl
 ```
 
 (2) Launch a local flat e5 retriever server.
@@ -68,8 +72,9 @@ gzip -d $save_path/wiki-18.jsonl.gz
 ```bash
 conda activate retriever
 
-index_file=$save_path/e5_Flat.index
-corpus_file=$save_path/wiki-18.jsonl
+SEARCH_DATA_ROOT=/root/autodl-fs
+index_file=$SEARCH_DATA_ROOT/indexes/wiki-18/e5_Flat.index
+corpus_file=$SEARCH_DATA_ROOT/data/wiki-18.jsonl
 retriever_name=e5
 retriever_path=intfloat/e5-base-v2
 
