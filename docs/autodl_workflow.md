@@ -16,12 +16,15 @@
 
 ```text
 /root/autodl-tmp/TRUST-R1/       # code repo
-/root/autodl-tmp/data/           # datasets/corpus
+/root/autodl-tmp/data/nq_search/ # small train/test parquet used by RL
 /root/autodl-tmp/models/         # model weights
-/root/autodl-tmp/indexes/        # FAISS/BM25 indexes
 /root/autodl-tmp/runs/           # training outputs/checkpoints/logs
 /root/autodl-tmp/reports/        # small exported summaries
+/root/autodl-fs/data/            # shared search corpus, e.g. wiki-18.jsonl
+/root/autodl-fs/indexes/         # shared FAISS/BM25 indexes
 ```
+
+4×4090 smoke test 默认使用 `/root/autodl-fs` 存放搜索语料和 index；训练输出仍写入 `/root/autodl-tmp/runs`，避免把 checkpoint/log 放进共享搜索数据目录。
 
 ## 3. 代码同步
 
@@ -59,7 +62,8 @@ git push
 [ ] 数据路径存在
 [ ] 模型路径存在
 [ ] 4 卡训练配置一致：`trainer.n_gpus_per_node=4`，`CUDA_VISIBLE_DEVICES=0,1,2,3`
-[ ] index / retriever 可用；如 retriever 和训练同机运行，优先用 CPU retriever，避免占用训练 GPU
+[ ] 搜索语料和 index 位于 `/root/autodl-fs`，例如 `/root/autodl-fs/data/wiki-18.jsonl` 和 `/root/autodl-fs/indexes/wiki-18/e5_Flat.index`
+[ ] index / retriever 可用；4×4090 smoke test 默认用 CPU retriever（`--faiss-gpu false`），避免占用训练 GPU
 [ ] fault seed / train seed 已写入配置
 [ ] 已跑过 2-step dry run
 [ ] 输出目录是新的 run_id

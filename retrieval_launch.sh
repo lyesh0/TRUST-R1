@@ -1,13 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
 
-file_path=/the/path/you/save/corpus
-index_file=$file_path/e5_Flat.index
-corpus_file=$file_path/wiki-18.jsonl
-retriever_name=e5
-retriever_path=intfloat/e5-base-v2
+SEARCH_DATA_ROOT="${SEARCH_DATA_ROOT:-/root/autodl-fs}"
+INDEX_FILE="${INDEX_FILE:-$SEARCH_DATA_ROOT/indexes/wiki-18/e5_Flat.index}"
+CORPUS_FILE="${CORPUS_FILE:-$SEARCH_DATA_ROOT/data/wiki-18.jsonl}"
+RETRIEVER_NAME="${RETRIEVER_NAME:-e5}"
+RETRIEVER_MODEL="${RETRIEVER_MODEL:-intfloat/e5-base-v2}"
+TOPK="${TOPK:-3}"
+FAISS_GPU="${FAISS_GPU:-false}"
 
-python search_r1/search/retrieval_server.py --index_path $index_file \
-                                            --corpus_path $corpus_file \
-                                            --topk 3 \
-                                            --retriever_name $retriever_name \
-                                            --retriever_model $retriever_path \
-                                            --faiss_gpu
+faiss_flag=()
+if [[ "$FAISS_GPU" == "true" || "$FAISS_GPU" == "1" || "$FAISS_GPU" == "yes" ]]; then
+  faiss_flag=(--faiss_gpu)
+fi
+
+python search_r1/search/retrieval_server.py \
+  --index_path "$INDEX_FILE" \
+  --corpus_path "$CORPUS_FILE" \
+  --topk "$TOPK" \
+  --retriever_name "$RETRIEVER_NAME" \
+  --retriever_model "$RETRIEVER_MODEL" \
+  "${faiss_flag[@]}"
