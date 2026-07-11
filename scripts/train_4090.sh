@@ -34,7 +34,7 @@ GPUS_PER_NODE="4"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 NNODES="1"
 
-# 训练参数（基于 10K 数据，batch=64，0.5 epoch ≈ 79 steps）
+# 训练参数（基于 79K 数据，batch=64，0.5 epoch ≈ 617 steps）
 DRY_RUN_STEPS="${DRY_RUN_STEPS:-2}"
 SMOKE_STEPS="${SMOKE_STEPS:-20}"
 PILOT_STEPS="${PILOT_STEPS:-300}"      # 0.25 epoch
@@ -46,9 +46,9 @@ TRAIN_DATA_NUM="10000"
 VAL_DATA_NUM="300"
 
 # 批大小配置（先测试 batch=32 是否 OOM）
-# 10K 数据，batch=32 → 1 epoch ≈ 313 steps
-# 10K 数据，batch=64 → 1 epoch ≈ 157 steps
-# 10K 数据，batch=128 → 1 epoch ≈ 79 steps
+# 79K 数据，batch=32 → 1 epoch ≈ 2,474 steps
+# 79K 数据，batch=64 → 1 epoch ≈ 1,237 steps
+# 79K 数据，batch=128 → 1 epoch ≈ 617 steps
 # 默认先用 batch=32 测试，通过后再试 batch=64
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-32}"
 VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-20}"
@@ -105,10 +105,10 @@ Stages (按顺序运行):
   --stage formal         正式训练（B0, B1, M1, M2）
   --stage batch-scaling  自动 batch scaling 测试（32→64→128）
 
-Batch 配置 (基于 10K 数据):
-  batch=32  → 1 epoch ≈ 313 steps
-  batch=64  → 1 epoch ≈ 157 steps
-  batch=128 → 1 epoch ≈ 79 steps
+Batch 配置 (基于 79K 数据):
+  batch=32  → 1 epoch ≈ 2,474 steps
+  batch=64  → 1 epoch ≈ 1,237 steps
+  batch=128 → 1 epoch ≈ 617 steps
 
 Options:
   --train-batch-size 32|64|128   覆盖默认 batch size (默认 32)
