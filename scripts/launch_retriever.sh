@@ -4,6 +4,14 @@
 
 set -euo pipefail
 
+# 要求在 retriever 环境中运行
+if [[ "${CONDA_DEFAULT_ENV:-}" != "retriever" ]]; then
+  echo "错误: 请在 retriever conda 环境中运行" >&2
+  echo "  conda activate retriever" >&2
+  echo "  bash scripts/launch_retriever.sh" >&2
+  exit 1
+fi
+
 # AutoDL 路径配置
 AUTODL_ROOT="${AUTODL_ROOT:-/root/autodl-tmp}"
 

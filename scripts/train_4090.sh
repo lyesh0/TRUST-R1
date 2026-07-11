@@ -277,7 +277,8 @@ check_retriever() {
   else
     echo "  ✗ Retriever 不可用: $RETRIEVER_URL" >&2
     echo "" >&2
-    echo "启动 Retriever:" >&2
+    echo "启动 Retriever (需要在 retriever conda 环境中):" >&2
+    echo "  conda activate retriever" >&2
     echo "  bash scripts/launch_retriever.sh" >&2
     exit 1
   fi
