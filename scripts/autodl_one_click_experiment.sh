@@ -69,6 +69,10 @@ Common options:
   --trust-logging true|false
   --skip-smoke true|false      Only meaningful for --mode core
 
+Prepare retriever assets first if they are missing:
+  SEARCH_DATA_ROOT=/root/autodl-fs
+  python scripts/download.py --data-root "$SEARCH_DATA_ROOT"
+
 Examples:
   bash scripts/autodl_one_click_experiment.sh --mode smoke
 

@@ -26,6 +26,16 @@
 
 4×4090 smoke test 默认使用 `/root/autodl-fs` 存放搜索语料和 index；训练输出仍写入 `/root/autodl-tmp/runs`，避免把 checkpoint/log 放进共享搜索数据目录。
 
+如需准备 wiki-18 检索语料和 e5 index，在 AutoDL 上运行：
+
+```bash
+cd /root/autodl-tmp/TRUST-R1
+SEARCH_DATA_ROOT=/root/autodl-fs
+python scripts/download.py --data-root "$SEARCH_DATA_ROOT"
+```
+
+该命令会生成 `/root/autodl-fs/data/wiki-18.jsonl` 和 `/root/autodl-fs/indexes/wiki-18/e5_Flat.index`。
+
 ## 3. 代码同步
 
 本地开发后：

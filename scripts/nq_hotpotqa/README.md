@@ -9,13 +9,13 @@ huggingface-cli download --repo-type dataset PeterJinGo/nq_hotpotqa_train --loca
 
 ### Launch the local search engine
 
-(1) Download the indexing and corpus.
+(1) Download and prepare the indexing and corpus. On AutoDL, keep shared retriever assets under `/root/autodl-fs`.
 ```bash
-save_path=/the/path/to/save
-python scripts/download.py --save_path $save_path
-cat $save_path/part_* > $save_path/e5_Flat.index
-gzip -d $save_path/wiki-18.jsonl.gz
+SEARCH_DATA_ROOT=/root/autodl-fs
+python scripts/download.py --data-root "$SEARCH_DATA_ROOT"
 ```
+
+This creates `$SEARCH_DATA_ROOT/indexes/wiki-18/e5_Flat.index` and `$SEARCH_DATA_ROOT/data/wiki-18.jsonl`.
 
 (2) Launch a local retrieval server.
 ```bash

@@ -381,10 +381,10 @@ Search-R1 使用 NQ（Natural Questions）数据集，包含：
 ```bash
 cd /mnt/data/Search-R1
 
-# 方法1：使用项目自带脚本（如果有）
-# python scripts/download.py --dataset nq --save_dir ./data
+# 注意：scripts/download.py 只负责准备 wiki-18 检索语料和 e5 index，
+# 不负责下载 NQ 训练数据。NQ 训练数据可直接从 HuggingFace 下载。
 
-# 方法2：直接从 HuggingFace 下载
+# 直接从 HuggingFace 下载
 python -c "
 from datasets import load_dataset
 
@@ -479,21 +479,18 @@ mkdir -p data/nq_search
 python scripts/process_nq_data.py
 ```
 
-### 5.4 下载 Wikipedia 语料（用于检索）
+### 5.4 下载 wiki-18 检索语料和 e5 index（用于检索）
 
 ```bash
-cd /mnt/data/Search-R1
+cd /root/autodl-tmp/TRUST-R1
 
-# 下载 Wikipedia 2018 语料（NQ 使用的是这个版本）
-wget https://rajpurkar.github.io/SQuAD-explorer/dataset/train-v2.0.json
-# 或者使用其他来源
+# wiki-18 检索语料和 index 较大，应在 AutoDL 上执行，不要在本地 Mac 下载。
+SEARCH_DATA_ROOT=/root/autodl-fs
+python scripts/download.py --data-root "$SEARCH_DATA_ROOT"
 
-# 如果需要完整 Wikipedia
-# wget https://dumps.wikimedia.org/enwiki/latest/enwiki-latest-pages-articles.xml.bz2
-
-# 查看数据目录
-ls -la data/
-ls -la data/nq_search/
+# 查看检索数据
+ls -lh /root/autodl-fs/data/wiki-18.jsonl
+ls -lh /root/autodl-fs/indexes/wiki-18/e5_Flat.index
 ```
 
 ---
