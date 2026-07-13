@@ -1,5 +1,6 @@
 from collections import Counter
 from dataclasses import asdict, dataclass
+from typing import Dict, List, Union
 from .trajectory import Trajectory
 from .rewards import count_duplicate_queries
 
@@ -14,11 +15,11 @@ class TrajectoryMetrics:
     duplicate_query_rate: float = 0.0
     first_failure_recovery_rate: float = 0.0
 
-    def to_dict(self) -> dict[str, float | int]:
+    def to_dict(self) -> Dict[str, Union[float, int]]:
         return asdict(self)
 
 
-def aggregate_trajectory_metrics(trajectories: list[Trajectory]) -> TrajectoryMetrics:
+def aggregate_trajectory_metrics(trajectories: List[Trajectory]) -> TrajectoryMetrics:
     if not trajectories:
         return TrajectoryMetrics()
 
@@ -46,7 +47,7 @@ def aggregate_trajectory_metrics(trajectories: list[Trajectory]) -> TrajectoryMe
     )
 
 
-def aggregate_trace_summary_metrics(trace_summaries) -> dict[str, float]:
+def aggregate_trace_summary_metrics(trace_summaries) -> Dict[str, float]:
     summaries = [summary for summary in trace_summaries if isinstance(summary, dict)]
     if not summaries:
         return {}

@@ -1,6 +1,6 @@
 import re
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 
 from .config import RewardConfig
 from .rewards import RewardBreakdown, compute_reward_breakdown, count_duplicate_queries
@@ -9,12 +9,12 @@ from .text import contains_answer, normalize_answer
 
 @dataclass(frozen=True)
 class ParsedSolution:
-    answer: str | None
-    search_queries: list[str]
-    information_blocks: list[str]
+    answer: Optional[str]
+    search_queries: List[str]
+    information_blocks: List[str]
     valid_format: bool
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
 
@@ -26,7 +26,7 @@ class TrustRewardResult:
     evidence_recovered: bool
     duplicate_query_count: int
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             "parsed": self.parsed.to_dict(),
             "reward": self.reward.to_dict(),
@@ -36,12 +36,12 @@ class TrustRewardResult:
         }
 
 
-def extract_tag_blocks(text: str, tag: str) -> list[str]:
+def extract_tag_blocks(text: str, tag: str) -> List[str]:
     pattern = rf"<{tag}>(.*?)</{tag}>"
     return [match.strip() for match in re.findall(pattern, text, re.DOTALL)]
 
 
-def extract_final_answer(text: str) -> str | None:
+def extract_final_answer(text: str) -> Optional[str]:
     answers = extract_tag_blocks(text, "answer")
     if not answers:
         return None
@@ -61,7 +61,7 @@ def parse_solution(solution_str: str) -> ParsedSolution:
     )
 
 
-def answer_matches(answer: str | None, targets: str | list[str]) -> bool:
+def answer_matches(answer: Optional[str], targets: Union[str, List[str]]) -> bool:
     if answer is None:
         return False
     if isinstance(targets, str):
@@ -73,10 +73,10 @@ def answer_matches(answer: str | None, targets: str | list[str]) -> bool:
 def compute_trust_reward(
     *,
     solution_str: str,
-    ground_truth: dict[str, Any],
+    ground_truth: Dict[str, Any],
     had_fault: bool = False,
     changed_query_after_fault: bool = False,
-    config: RewardConfig | None = None,
+    config: Optional[RewardConfig] = None,
 ) -> TrustRewardResult:
     parsed = parse_solution(solution_str)
     targets = ground_truth["target"]

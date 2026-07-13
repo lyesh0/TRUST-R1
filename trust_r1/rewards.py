@@ -1,5 +1,5 @@
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Dict, List, Optional
 
 from .config import RewardConfig
 
@@ -16,7 +16,7 @@ class RewardBreakdown:
     def total(self) -> float:
         return self.answer + self.format + self.recovery - self.duplicate_penalty - self.invalid_penalty
 
-    def to_dict(self) -> dict[str, float]:
+    def to_dict(self) -> Dict[str, float]:
         values = asdict(self)
         values["total"] = self.total
         return values
@@ -31,7 +31,7 @@ def compute_reward_breakdown(
     evidence_recovered: bool = False,
     duplicate_query_count: int = 0,
     invalid_action_count: int = 0,
-    config: RewardConfig | None = None,
+    config: Optional[RewardConfig] = None,
 ) -> RewardBreakdown:
     cfg = config or RewardConfig()
     answer = cfg.answer_weight if answer_correct else 0.0
@@ -50,7 +50,7 @@ def compute_reward_breakdown(
     )
 
 
-def count_duplicate_queries(queries: list[str]) -> int:
+def count_duplicate_queries(queries: List[str]) -> int:
     seen = set()
     duplicates = 0
     for query in queries:

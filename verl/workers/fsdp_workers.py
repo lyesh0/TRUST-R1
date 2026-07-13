@@ -115,7 +115,8 @@ class ActorRolloutRefWorker(Worker):
                                override_model_config,
                                use_remove_padding=False,
                                enable_gradient_checkpointing=False,
-                               trust_remote_code=False):
+                               trust_remote_code=False,
+                               resume_path=None):
         from verl.utils.model import print_model_size, update_model_config
         from verl.utils.torch_dtypes import PrecisionType
         from transformers import AutoModelForCausalLM, AutoConfig
@@ -159,9 +160,14 @@ class ActorRolloutRefWorker(Worker):
         # NOTE(fix me): tie_word_embedding causes meta_tensor init to hang
         init_context = get_init_weight_context_manager(use_meta_tensor=not actor_model_config.tie_word_embeddings)
 
+        # Use resume_path for weights if provided, otherwise use local_path
+        weight_path = resume_path if resume_path else local_path
+        if self.rank == 0 and resume_path:
+            print(f'Resuming from checkpoint: {resume_path}')
+
         with init_context(), warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            actor_module = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=local_path,
+            actor_module = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=weight_path,
                                                                 torch_dtype=torch_dtype,
                                                                 config=actor_model_config,
                                                                 attn_implementation='flash_attention_2',
@@ -291,6 +297,7 @@ class ActorRolloutRefWorker(Worker):
         override_model_config = OmegaConf.to_container(self.config.model.get('override_config', OmegaConf.create()))
 
         use_remove_padding = self.config.model.get('use_remove_padding', False)
+        resume_path = self.config.model.get('resume_path', None)
 
         if self._is_actor or self._is_rollout:
             # we need the model for actor and rollout
@@ -307,7 +314,8 @@ class ActorRolloutRefWorker(Worker):
                 override_model_config=override_model_config,
                 use_remove_padding=use_remove_padding,
                 enable_gradient_checkpointing=self.config.model.get('enable_gradient_checkpointing', False),
-                trust_remote_code=self.config.model.get('trust_remote_code', False))
+                trust_remote_code=self.config.model.get('trust_remote_code', False),
+                resume_path=resume_path)
 
             # get the original unwrapped module
             self.actor_module = self.actor_module_fsdp._fsdp_wrapped_module
@@ -338,7 +346,8 @@ class ActorRolloutRefWorker(Worker):
                                                                override_model_config=override_model_config,
                                                                use_remove_padding=use_remove_padding,
                                                                trust_remote_code=self.config.model.get(
-                                                                   'trust_remote_code', False))[0]
+                                                                   'trust_remote_code', False),
+                                                               resume_path=resume_path)[0]
             if self._is_offload_param:
                 offload_fsdp_param_and_grad(module=self.ref_module_fsdp, offload_grad=self._is_offload_grad)
 

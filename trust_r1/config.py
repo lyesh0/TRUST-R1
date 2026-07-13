@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Mapping, Optional
 
 
 @dataclass(frozen=True)
@@ -8,7 +8,7 @@ class FaultConfig:
     mode: str = "clean"
     fault_rate: float = 0.0
     seed: int = 0
-    topk: int | None = None
+    topk: Optional[int] = None
 
     def __post_init__(self):
         if not 0.0 <= self.fault_rate <= 1.0:

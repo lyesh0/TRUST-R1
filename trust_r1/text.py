@@ -1,5 +1,6 @@
 import re
 import string
+from typing import List, Union
 
 
 def normalize_answer(text: str) -> str:
@@ -15,7 +16,7 @@ def normalize_answer(text: str) -> str:
     return white_space_fix(remove_articles(remove_punc(text.lower())))
 
 
-def contains_answer(text: str, answers: str | list[str]) -> bool:
+def contains_answer(text: str, answers: Union[str, List[str]]) -> bool:
     if isinstance(answers, str):
         answers = [answers]
     normalized_text = normalize_answer(text)

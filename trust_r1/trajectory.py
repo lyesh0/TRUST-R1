@@ -1,7 +1,7 @@
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 
 
 @dataclass
@@ -11,11 +11,11 @@ class SearchTurn:
     query: str = ""
     fault_enabled: bool = False
     fault_type: str = "clean"
-    retrieved_doc_ids: list[str] = field(default_factory=list)
+    retrieved_doc_ids: List[str] = field(default_factory=list)
     observation_chars: int = 0
     valid_action: bool = True
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
 
@@ -24,11 +24,11 @@ class Trajectory:
     run_id: str
     sample_id: str
     question: str
-    gold_answer: str | list[str] | None = None
-    final_answer: str | None = None
-    is_correct: bool | None = None
-    turns: list[SearchTurn] = field(default_factory=list)
-    reward: dict[str, float] = field(default_factory=dict)
+    gold_answer: Optional[Union[str, List[str]]] = None
+    final_answer: Optional[str] = None
+    is_correct: Optional[bool] = None
+    turns: List[SearchTurn] = field(default_factory=list)
+    reward: Dict[str, float] = field(default_factory=dict)
 
     def add_turn(self, turn: SearchTurn) -> None:
         self.turns.append(turn)
@@ -90,7 +90,7 @@ class Trajectory:
 
 
 class TrajectoryJsonlWriter:
-    def __init__(self, path: str | Path):
+    def __init__(self, path: Union[str, Path]):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
 

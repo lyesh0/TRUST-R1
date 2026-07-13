@@ -3,7 +3,7 @@ import re
 from collections import defaultdict
 import os
 import numpy as np
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from dataclasses import dataclass
 from .tensor_helper import TensorHelper, TensorConfig
 from verl import DataProto
@@ -25,7 +25,7 @@ class GenerationConfig:
     no_think_rl: bool=False
     search_url: str = None
     topk: int = 3
-    retrieval_fault: FaultConfig | None = None
+    retrieval_fault: Optional[FaultConfig] = None
 
 class LLMGenerationManager:
     def __init__(

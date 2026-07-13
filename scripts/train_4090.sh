@@ -40,6 +40,8 @@ SMOKE_STEPS="${SMOKE_STEPS:-20}"
 PILOT_STEPS="${PILOT_STEPS:-300}"      # 0.25 epoch
 FORMAL_STEPS="${FORMAL_STEPS:-600}"    # 0.5 epoch
 EXTENDED_STEPS="${EXTENDED_STEPS:-1200}"  # 1 epoch
+RESUME_PATH="${RESUME_PATH:-}"          # 从 checkpoint 续训的路径
+RESUME_STEPS="${RESUME_STEPS:-0}"       # 已完成的步数（续训时设置）
 
 # 数据规模
 TRAIN_DATA_NUM="10000"
@@ -202,6 +204,8 @@ while [[ $# -gt 0 ]]; do
     --test-freq) TEST_FREQ="$2"; shift 2 ;;
     --trust-logging) TRUST_LOGGING="$2"; shift 2 ;;
     --wandb-project) WANDB_PROJECT="$2"; shift 2 ;;
+    --resume-from) RESUME_PATH="$2"; shift 2 ;;
+    --resume-steps) RESUME_STEPS="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 2 ;;
   esac
@@ -482,9 +486,17 @@ run_one() {
   local steps
   steps="$(get_steps_for_stage)"
 
+  # 续训模式：计算剩余步数
+  local resume_tag=""
+  if [[ -n "$RESUME_PATH" ]]; then
+    steps=$((steps - RESUME_STEPS))
+    resume_tag="_resume${RESUME_STEPS}"
+    echo "续训模式: 已完成 ${RESUME_STEPS} steps, 剩余 ${steps} steps"
+  fi
+
   # 生成运行 ID
   local run_id
-  run_id="$(date +%Y%m%d_%H%M%S)_${exp}_${mode}_${ALGO}_seed${SEED}"
+  run_id="$(date +%Y%m%d_%H%M%S)_${exp}_${mode}_${ALGO}_seed${SEED}${resume_tag}"
   local run_dir="$RUN_ROOT/$run_id"
   mkdir -p "$run_dir"
 
@@ -500,6 +512,10 @@ run_one() {
     algo_overrides
     echo ""
     experiment_overrides "$exp"
+    if [[ -n "$RESUME_PATH" ]]; then
+      echo ""
+      echo "actor_rollout_ref.model.resume_path=$RESUME_PATH"
+    fi
   } > "$overrides_file"
 
   # 生成运行脚本

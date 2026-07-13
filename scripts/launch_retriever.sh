@@ -1,64 +1,55 @@
 #!/usr/bin/env bash
-# TRUST-R1 AutoDL Retriever 启动脚本
-# 参考 README-searchr1.md 的 retriever 环境配置
-
+# =============================================================================
+# TRUST-R1 AutoDL Retriever 启动脚本 (前台运行，适合调试)
+# =============================================================================
+# 用法: bash scripts/launch_retriever.sh
+# 后台运行请用: bash retrieval_launch.sh
+# 所有路径参考: docs/autodl_paths.md
+# =============================================================================
 set -euo pipefail
 
-# 要求在 retriever 环境中运行
-if [[ "${CONDA_DEFAULT_ENV:-}" != "retriever" ]]; then
-  echo "错误: 请在 retriever conda 环境中运行" >&2
-  echo "  conda activate retriever" >&2
-  echo "  bash scripts/launch_retriever.sh" >&2
-  exit 1
-fi
+# Path defaults (override via env vars)
+SEARCH_DATA_ROOT="${SEARCH_DATA_ROOT:-/root/autodl-fs}"
+CORPUS_EXTRACTED="${CORPUS_EXTRACTED:-$SEARCH_DATA_ROOT/data/wiki-18-extracted.jsonl}"
+INDEX_TEST="${INDEX_TEST:-$SEARCH_DATA_ROOT/test-index-100K.faiss}"
+INDEX_FULL="${INDEX_FULL:-$SEARCH_DATA_ROOT/indexes/wiki-18/e5_Flat.index}"
+RETRIEVER_MODEL="${RETRIEVER_MODEL:-/root/e5-base-v2}"
+RETRIEVER_PYTHON="${RETRIEVER_PYTHON:-/root/miniconda3/envs/retriever/bin/python}"
 
-# AutoDL 路径配置
-AUTODL_ROOT="${AUTODL_ROOT:-/root/autodl-tmp}"
-
-# 索引与语料文件
-SEARCH_DATA_ROOT="${SEARCH_DATA_ROOT:-$AUTODL_ROOT/corpus}"
-INDEX_FILE="${INDEX_FILE:-$SEARCH_DATA_ROOT/index/bge_Flat.index}"
-CORPUS_FILE="${CORPUS_FILE:-$SEARCH_DATA_ROOT/corpus.jsonl}"
-
-# Retriever 配置
-RETRIEVER_NAME="${RETRIEVER_NAME:-bge}"
-RETRIEVER_MODEL="${RETRIEVER_MODEL:-$AUTODL_ROOT/models/bge-small-en-v1.5}"
 TOPK="${TOPK:-3}"
+RETRIEVER_MODE="${RETRIEVER_MODE:-test}"
 
-# FAISS GPU 配置 (AutoDL 4090 可选)
-FAISS_GPU="${FAISS_GPU:-false}"
+# Disable Intel ITT profiling
+export INTEL_LIBITTNOTIFY64=
+export INTEL_JIT_NOTIFIER_DISABLE=1
 
-faiss_flag=()
-if [[ "$FAISS_GPU" == "true" || "$FAISS_GPU" == "1" || "$FAISS_GPU" == "yes" ]]; then
-  faiss_flag=(--faiss_gpu)
-fi
+# Select mode
+case "$RETRIEVER_MODE" in
+    test)
+        SERVER_SCRIPT="search_r1/search/retrieval_server.py"
+        ARGS=(
+            --index_path "$INDEX_TEST"
+            --corpus_path "$CORPUS_EXTRACTED"
+            --topk "$TOPK"
+            --retriever_name e5
+            --retriever_model "$RETRIEVER_MODEL"
+        )
+        ;;
+    bm25)
+        SERVER_SCRIPT="search_r1/search/bm25_fast_server.py"
+        ARGS=(--corpus_path "$CORPUS_EXTRACTED" --topk "$TOPK")
+        ;;
+    bm25-stream)
+        SERVER_SCRIPT="search_r1/search/simple_bm25_server.py"
+        ARGS=(--corpus_path "$CORPUS_EXTRACTED" --topk "$TOPK")
+        ;;
+    *)
+        echo "ERROR: Unknown mode: $RETRIEVER_MODE" >&2
+        exit 1
+        ;;
+esac
 
-# 检查文件是否存在
-if [[ ! -f "$CORPUS_FILE" ]]; then
-  echo "错误: 语料不存在: $CORPUS_FILE" >&2
-  exit 1
-fi
-
-if [[ ! -f "$INDEX_FILE" ]]; then
-  echo "错误: 索引不存在: $INDEX_FILE" >&2
-  exit 1
-fi
-
-echo "=== 启动 Retriever ==="
-echo "  索引: $INDEX_FILE"
-echo "  语料: $CORPUS_FILE"
-echo "  Retriever: $RETRIEVER_NAME"
-echo "  模型: $RETRIEVER_MODEL"
-echo "  TopK: $TOPK"
-echo "  FAISS GPU: $FAISS_GPU"
-echo ""
-
+echo "=== Launching Retriever (mode=$RETRIEVER_MODE) ==="
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-python search_r1/search/retrieval_server.py \
-  --index_path "$INDEX_FILE" \
-  --corpus_path "$CORPUS_FILE" \
-  --topk "$TOPK" \
-  --retriever_name "$RETRIEVER_NAME" \
-  --retriever_model "$RETRIEVER_MODEL" \
-  "${faiss_flag[@]}"
+exec "$RETRIEVER_PYTHON" $SERVER_SCRIPT "${ARGS[@]}"

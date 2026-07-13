@@ -231,7 +231,7 @@ class DenseRetriever(BaseRetriever):
             model_path = config.retrieval_model_path,
             pooling_method = config.retrieval_pooling_method,
             max_length = config.retrieval_query_max_length,
-            use_fp16 = config.retrieval_use_fp16
+            use_fp16 = config.retriever_use_fp16
         )
         self.topk = config.retrieval_topk
         self.batch_size = config.retrieval_batch_size
