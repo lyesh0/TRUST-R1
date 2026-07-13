@@ -269,7 +269,7 @@ def main_task(config):
     # Note that we always use function-based RM for validation
     val_reward_fn = RewardManager(
         tokenizer=tokenizer,
-        num_examine=1,
+        num_examine=config.trainer.get('val_num_examine', 1),
         trust_reward_config=trust_reward_config,
         trust_logging_config=trust_logging_config,
     )

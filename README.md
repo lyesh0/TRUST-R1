@@ -81,6 +81,7 @@ AutoDL 负责：
 - [`CLAUDE.md`](CLAUDE.md)：Claude 项目级工作规则。
 - [`docs/superpowers/specs/2026-07-02-trust-r1-project-bootstrap-design.md`](docs/superpowers/specs/2026-07-02-trust-r1-project-bootstrap-design.md)：项目初始化设计文档。
 - [`docs/autodl_workflow.md`](docs/autodl_workflow.md)：AutoDL 远程实验工作流。
+- [`docs/experiment_launch_guide.md`](docs/experiment_launch_guide.md)：AutoDL 实验启动命令与分阶段流程。
 - [`docs/experiment_matrix.md`](docs/experiment_matrix.md)：实验矩阵与成功标准。
 - [`docs/logging_schema.md`](docs/logging_schema.md)：日志、轨迹和指标 schema。
 - [`reports/README.md`](reports/README.md)：实验结果摘要目录说明。
