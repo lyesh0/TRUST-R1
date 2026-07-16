@@ -182,8 +182,8 @@ def compute_policy_loss(old_log_prob, log_prob, advantages, eos_mask, cliprange)
             a float number indicating the fraction of policy gradient loss being clipped
 
     """
-    negative_approx_kl = log_prob - old_log_prob
-    ratio = torch.exp(negative_approx_kl)
+    negative_approx_kl = torch.nan_to_num(log_prob - old_log_prob, nan=0.0, posinf=20.0, neginf=-20.0)
+    ratio = torch.exp(torch.clamp(negative_approx_kl, min=-20.0, max=20.0))
     ppo_kl = verl_F.masked_mean(-negative_approx_kl, eos_mask)
 
     pg_losses = -advantages * ratio
@@ -262,7 +262,8 @@ def kl_penalty(logprob: torch.FloatTensor, ref_logprob: torch.FloatTensor, kl_pe
     # J. Schulman. Approximating kl divergence, 2020.
     # # URL http://joschu.net/blog/kl-approx.html.
     if kl_penalty == 'low_var_kl':
-        kl = ref_logprob - logprob
+        kl = torch.nan_to_num(ref_logprob - logprob, nan=0.0, posinf=20.0, neginf=-20.0)
+        kl = torch.clamp(kl, min=-20.0, max=20.0)
         ratio = torch.exp(kl)
         kld = (ratio - kl - 1).contiguous()
         return torch.clamp(kld, min=-10, max=10)

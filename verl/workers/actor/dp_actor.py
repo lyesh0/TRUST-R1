@@ -147,8 +147,18 @@ class DataParallelPPOActor(BasePPOActor):
             grad_norm = self.actor_module.clip_grad_norm_(max_norm=self.config.grad_clip)
         else:
             grad_norm = torch.nn.utils.clip_grad_norm_(self.actor_module.parameters(), max_norm=self.config.grad_clip)
+        if not torch.isfinite(grad_norm).all().item():
+            self.actor_optimizer.zero_grad()
+            return grad_norm, True
         self.actor_optimizer.step()
-        return grad_norm
+        return grad_norm, False
+
+    @staticmethod
+    def _has_non_finite(*tensors):
+        for tensor in tensors:
+            if tensor is not None and not torch.isfinite(tensor).all().item():
+                return True
+        return False
 
     def compute_log_prob(self, data: DataProto) -> torch.Tensor:
         """Compute the log probability of the responses given input_ids, attention_mask and position_ids
@@ -231,6 +241,10 @@ class DataParallelPPOActor(BasePPOActor):
                 micro_batches = mini_batch.split(self.config.ppo_micro_batch_size)
 
             self.actor_optimizer.zero_grad()
+            valid_micro_batches = 0
+            skipped_zero_mask = 0
+            skipped_non_finite = 0
+            skip_optimizer_step = False
 
             for data in micro_batches:
                 data = data.cuda()  # actor device is cpu when using offload
@@ -240,6 +254,9 @@ class DataParallelPPOActor(BasePPOActor):
                 response_mask = attention_mask[:, -response_length:]
                 if self.config.state_masking:
                     response_mask = data['loss_mask']
+                if response_mask.sum().item() <= 0:
+                    skipped_zero_mask += 1
+                    continue
                 old_log_prob = data['old_log_probs']
                 advantages = data['advantages']
 
@@ -248,6 +265,10 @@ class DataParallelPPOActor(BasePPOActor):
 
                 # all return: (bsz, response_length)
                 entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
+                if self._has_non_finite(log_prob, old_log_prob, advantages):
+                    skipped_non_finite += 1
+                    skip_optimizer_step = True
+                    break
 
                 pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
                                                                               log_prob=log_prob,
@@ -262,6 +283,10 @@ class DataParallelPPOActor(BasePPOActor):
 
                 if self.config.use_kl_loss:
                     ref_log_prob = data['ref_log_prob']
+                    if self._has_non_finite(ref_log_prob):
+                        skipped_non_finite += 1
+                        skip_optimizer_step = True
+                        break
                     # compute kl loss
                     kld = core_algos.kl_penalty(logprob=log_prob,
                                                 ref_logprob=ref_log_prob,
@@ -272,8 +297,14 @@ class DataParallelPPOActor(BasePPOActor):
                     metrics['actor/kl_loss'] = kl_loss.detach().item()
                     metrics['actor/kl_coef'] = self.config.kl_loss_coef
 
+                if self._has_non_finite(pg_loss, pg_clipfrac, ppo_kl, entropy_loss, policy_loss):
+                    skipped_non_finite += 1
+                    skip_optimizer_step = True
+                    break
+
                 loss = policy_loss / self.gradient_accumulation
                 loss.backward()
+                valid_micro_batches += 1
 
                 data = {
                     'actor/entropy_loss': entropy_loss.detach().item(),
@@ -283,8 +314,24 @@ class DataParallelPPOActor(BasePPOActor):
                 }
                 append_to_dict(metrics, data)
 
-            grad_norm = self._optimizer_step()
-            data = {'actor/grad_norm': grad_norm.detach().item()}
+            if skip_optimizer_step or valid_micro_batches == 0:
+                self.actor_optimizer.zero_grad()
+                data = {
+                    'actor/grad_norm': 0.0,
+                    'actor/update_skipped': 1.0,
+                    'actor/skipped_zero_mask_micro_batches': skipped_zero_mask,
+                    'actor/skipped_non_finite_micro_batches': skipped_non_finite,
+                }
+                append_to_dict(metrics, data)
+                continue
+
+            grad_norm, skipped_bad_grad = self._optimizer_step()
+            data = {
+                'actor/grad_norm': 0.0 if skipped_bad_grad else grad_norm.detach().item(),
+                'actor/update_skipped': 1.0 if skipped_bad_grad else 0.0,
+                'actor/skipped_zero_mask_micro_batches': skipped_zero_mask,
+                'actor/skipped_non_finite_micro_batches': skipped_non_finite,
+            }
             append_to_dict(metrics, data)
         self.actor_optimizer.zero_grad()
         return metrics

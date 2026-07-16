@@ -42,6 +42,8 @@ TEST_FREQ="${TEST_FREQ:-50}"
 SAVE_FREQ="${SAVE_FREQ:-50}"
 VAL_NUM_EXAMINE="${VAL_NUM_EXAMINE:-20}"
 TRUST_LOGGING="${TRUST_LOGGING:-false}"
+B0_100_SAVE_FREQ="${B0_100_SAVE_FREQ:-20}"
+B0_100_TEST_FREQ="${B0_100_TEST_FREQ:-20}"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
@@ -160,8 +162,8 @@ find_checkpoint() {
 run_100() {
   log "=== B0 100-step training ==="
   run_ppo "b0_clean_100step_seed${SEED}" 100 "$MODEL_PATH" \
-    trainer.save_freq=100 \
-    trainer.test_freq=20
+    trainer.save_freq=$B0_100_SAVE_FREQ \
+    trainer.test_freq=$B0_100_TEST_FREQ
 }
 
 # ==============================
