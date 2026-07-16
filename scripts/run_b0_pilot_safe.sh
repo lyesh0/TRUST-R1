@@ -26,9 +26,9 @@ TEMPERATURE="${TEMPERATURE:-0.8}"
 TOP_P="${TOP_P:-0.95}"
 TOPK="${TOPK:-3}"
 MAX_START_LENGTH="${MAX_START_LENGTH:-1024}"
-MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-2560}"
-MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-256}"
-MAX_OBS_LENGTH="${MAX_OBS_LENGTH:-384}"
+MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-1024}"
+MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-128}"
+MAX_OBS_LENGTH="${MAX_OBS_LENGTH:-256}"
 MAX_TURNS="${MAX_TURNS:-2}"
 TOTAL_STEPS="${TOTAL_STEPS:-10}"
 TEST_FREQ="${TEST_FREQ:-2}"
@@ -237,6 +237,8 @@ set -euo pipefail
 cd '$ROOT_DIR'
 export CUDA_VISIBLE_DEVICES='$CUDA_VISIBLE_DEVICES'
 export PYTHONUNBUFFERED=1
+
+# Memory-saving: offload optimizer states and ref model to CPU (required for 24GB GPU)
 python3 -m verl.trainer.main_ppo \\
   data.train_files=$DATA_DIR/train.parquet \\
   data.val_files=$DATA_DIR/test.parquet \\
@@ -249,6 +251,12 @@ python3 -m verl.trainer.main_ppo \\
   data.max_response_length=$MAX_RESPONSE_LENGTH \\
   data.max_obs_length=$MAX_OBS_LENGTH \\
   actor_rollout_ref.model.path=$MODEL_PATH \\
+  actor_rollout_ref.model.enable_gradient_checkpointing=true \\
+  actor_rollout_ref.model.use_remove_padding=true \\
+  actor_rollout_ref.actor.fsdp_config.param_offload=false \\
+  actor_rollout_ref.actor.fsdp_config.grad_offload=false \\
+  actor_rollout_ref.actor.fsdp_config.optimizer_offload=true \\
+  actor_rollout_ref.ref.fsdp_config.param_offload=true \\
   critic.model.path=$MODEL_PATH \\
   actor_rollout_ref.actor.optim.lr=$ACTOR_LR \\
   actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=$LR_WARMUP_RATIO \\
@@ -260,7 +268,7 @@ python3 -m verl.trainer.main_ppo \\
   actor_rollout_ref.actor.state_masking=true \\
   actor_rollout_ref.rollout.name=vllm \\
   actor_rollout_ref.rollout.tensor_model_parallel_size=1 \\
-  actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \\
+  actor_rollout_ref.rollout.gpu_memory_utilization=0.45 \\
   actor_rollout_ref.rollout.temperature=$TEMPERATURE \\
   actor_rollout_ref.rollout.top_p=$TOP_P \\
   actor_rollout_ref.rollout.n_agent=$N_AGENT \\
