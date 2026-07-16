@@ -86,7 +86,7 @@ bash scripts/run_trust_r1_experiments.sh \
 
 ### 4.2 准备 wiki-18 corpus 和 e5 index
 
-如果 `/root/autodl-fs/data/wiki-18.jsonl` 和 `/root/autodl-fs/indexes/wiki-18/e5_Flat.index` 不存在：
+如果 `/root/autodl-fs/data/wiki-18-extracted.jsonl` 和 `/root/autodl-fs/indexes/wiki-18/e5_Flat.index` 不存在：
 
 ```bash
 cd /root/autodl-tmp/TRUST-R1
@@ -118,10 +118,10 @@ mkdir -p /root/autodl-tmp/runs
 
 nohup python3 search_r1/search/retrieval_server.py \
   --index_path /root/autodl-fs/indexes/wiki-18/e5_Flat.index \
-  --corpus_path /root/autodl-fs/data/wiki-18.jsonl \
+  --corpus_path /root/autodl-fs/data/wiki-18-extracted.jsonl \
   --topk 3 \
   --retriever_name e5 \
-  --retriever_model intfloat/e5-base-v2 \
+  --retriever_model /root/e5-base-v2 \
   > /root/autodl-tmp/runs/retriever_$(date +%Y%m%d_%H%M%S).log 2>&1 &
 ```
 

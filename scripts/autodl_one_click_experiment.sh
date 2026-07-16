@@ -3,15 +3,15 @@ set -euo pipefail
 
 MODE="smoke"
 ALGO="grpo"
-MODEL="/root/autodl-tmp/models/Qwen2.5-3B-Instruct"
+MODEL="/root/autodl-tmp/models/Qwen2.5-3B"
 DATA_DIR="/root/autodl-tmp/data/nq_search"
 RUN_ROOT="/root/autodl-tmp/runs"
 SEARCH_DATA_ROOT="${SEARCH_DATA_ROOT:-/root/autodl-fs}"
 RETRIEVER_URL="http://127.0.0.1:8000/retrieve"
 RETRIEVER_INDEX="${RETRIEVER_INDEX:-$SEARCH_DATA_ROOT/indexes/wiki-18/e5_Flat.index}"
-RETRIEVER_CORPUS="${RETRIEVER_CORPUS:-$SEARCH_DATA_ROOT/data/wiki-18.jsonl}"
+RETRIEVER_CORPUS="${RETRIEVER_CORPUS:-$SEARCH_DATA_ROOT/data/wiki-18-extracted.jsonl}"
 RETRIEVER_NAME="${RETRIEVER_NAME:-e5}"
-RETRIEVER_MODEL="${RETRIEVER_MODEL:-intfloat/e5-base-v2}"
+RETRIEVER_MODEL="${RETRIEVER_MODEL:-/root/e5-base-v2}"
 FAISS_GPU="${FAISS_GPU:-false}"
 AUTO_START_RETRIEVER="true"
 PREPARE_DATA="auto"
@@ -49,7 +49,7 @@ Common options:
   --search-data-root PATH      Default: /root/autodl-fs for shared retriever data
   --retriever-url URL
   --retriever-index PATH       Default: $SEARCH_DATA_ROOT/indexes/wiki-18/e5_Flat.index
-  --retriever-corpus PATH      Default: $SEARCH_DATA_ROOT/data/wiki-18.jsonl
+  --retriever-corpus PATH      Default: $SEARCH_DATA_ROOT/data/wiki-18-extracted.jsonl
   --retriever-name NAME        Default: e5
   --retriever-model PATH_OR_ID Default: intfloat/e5-base-v2
   --faiss-gpu true|false       Default: false, avoids retriever competing with 4-GPU training
@@ -78,11 +78,11 @@ Examples:
 
   bash scripts/autodl_one_click_experiment.sh \
     --mode core \
-    --model /root/autodl-tmp/models/Qwen2.5-3B-Instruct \
+    --model /root/autodl-tmp/models/Qwen2.5-3B \
     --data-dir /root/autodl-tmp/data/nq_search \
     --search-data-root /root/autodl-fs \
     --retriever-index /root/autodl-fs/indexes/wiki-18/e5_Flat.index \
-    --retriever-corpus /root/autodl-fs/data/wiki-18.jsonl \
+    --retriever-corpus /root/autodl-fs/data/wiki-18-extracted.jsonl \
     --gpus-per-node 4 \
     --cuda-visible-devices 0,1,2,3 \
     --total-steps 100
@@ -99,7 +99,7 @@ while [[ $# -gt 0 ]]; do
     --search-data-root)
       SEARCH_DATA_ROOT="$2"
       RETRIEVER_INDEX="$SEARCH_DATA_ROOT/indexes/wiki-18/e5_Flat.index"
-      RETRIEVER_CORPUS="$SEARCH_DATA_ROOT/data/wiki-18.jsonl"
+      RETRIEVER_CORPUS="$SEARCH_DATA_ROOT/data/wiki-18-extracted.jsonl"
       shift 2
       ;;
     --retriever-url) RETRIEVER_URL="$2"; shift 2 ;;

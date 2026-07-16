@@ -16,12 +16,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 def load_corpus(corpus_path: str):
-    corpus = datasets.load_dataset(
-        'json', 
-        data_files=corpus_path,
-        split="train",
-        num_proc=4
-    )
+    corpus = read_jsonl(corpus_path)
     return corpus
 
 def read_jsonl(file_path):
@@ -337,13 +332,13 @@ def retrieve_endpoint(request: QueryRequest):
     if not request.topk:
         request.topk = config.retrieval_topk  # fallback to default
 
-    # Perform batch retrieval
-    results, scores = retriever.batch_search(
+    # Perform batch retrieval (always request scores internally)
+    results, scores = retriever._batch_search(
         query_list=request.queries,
         num=request.topk,
-        return_score=request.return_scores
+        return_score=True
     )
-    
+
     # Format response
     resp = []
     for i, single_result in enumerate(results):

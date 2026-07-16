@@ -4,7 +4,7 @@ set -euo pipefail
 MODE="${1:-help}"
 MODEL_PATH="${MODEL_PATH:-/root/autodl-tmp/models/Qwen2.5-3B}"
 DATA_DIR="${DATA_DIR:-/root/autodl-tmp/data/nq_search}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-/root/autodl-tmp/runs/b0_pilot_safe}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-/root/autodl-fs/runs/b0_pilot_safe}"
 RETRIEVER_URL="${RETRIEVER_URL:-${SEARCH_URL:-http://127.0.0.1:8000/retrieve}}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 GPUS_PER_NODE="${GPUS_PER_NODE:-4}"

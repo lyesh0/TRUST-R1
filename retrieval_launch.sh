@@ -3,9 +3,9 @@ set -euo pipefail
 
 SEARCH_DATA_ROOT="${SEARCH_DATA_ROOT:-/root/autodl-fs}"
 INDEX_FILE="${INDEX_FILE:-$SEARCH_DATA_ROOT/indexes/wiki-18/e5_Flat.index}"
-CORPUS_FILE="${CORPUS_FILE:-$SEARCH_DATA_ROOT/data/wiki-18.jsonl}"
+CORPUS_FILE="${CORPUS_FILE:-$SEARCH_DATA_ROOT/data/wiki-18-extracted.jsonl}"
 RETRIEVER_NAME="${RETRIEVER_NAME:-e5}"
-RETRIEVER_MODEL="${RETRIEVER_MODEL:-intfloat/e5-base-v2}"
+RETRIEVER_MODEL="${RETRIEVER_MODEL:-/root/e5-base-v2}"
 TOPK="${TOPK:-3}"
 FAISS_GPU="${FAISS_GPU:-false}"
 
