@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import torch
 import re
 from collections import defaultdict
