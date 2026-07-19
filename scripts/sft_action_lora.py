@@ -100,8 +100,8 @@ def train(args):
     training_args = TrainingArguments(
         output_dir=args.output,
         per_device_train_batch_size=1,
-        gradient_accumulation_steps=4,
-        max_steps=50,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        max_steps=args.max_steps,
         learning_rate=1e-4,
         warmup_steps=5,
         bf16=True,
@@ -151,6 +151,8 @@ def parse_args():
     train_parser.add_argument("--data", required=True)
     train_parser.add_argument("--output", required=True)
     train_parser.add_argument("--max-length", type=int, default=1024)
+    train_parser.add_argument("--gradient-accumulation-steps", type=int, default=4)
+    train_parser.add_argument("--max-steps", type=int, default=50)
     merge_parser = subparsers.add_parser("merge")
     merge_parser.add_argument("--checkpoint", required=True)
     merge_parser.add_argument("--output", required=True)

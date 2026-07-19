@@ -228,6 +228,11 @@ seed: 42
 
 分别评估 Base、step25、step50。C0 选择规则是“最早通过全部门槛”：step25 通过则固定使用 step25；否则检查 step50；step50 通过才使用 step50。不得根据后续 RL 结果反选 C0。合并 LoRA 后保存为完整 Hugging Face 模型：
 
+SFT 可以等价地改用单张 24GB GPU：保持 `per_device_train_batch_size=1`，将
+`gradient_accumulation_steps` 从四卡下的 4 改为 16，使 effective batch 仍为 16，
+并保持 `max_steps=50`。单卡与四卡的浮点归约顺序不同，不要求权重逐位一致；两者
+都必须通过同一套 step25/step50 C0 门槛。RL 的 S1-B0/S1-B1 正式配置仍固定为四卡。
+
 ```text
 /root/autodl-tmp/TRUST-R1-stage1/checkpoints/C0
 ```
