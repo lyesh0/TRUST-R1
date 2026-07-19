@@ -298,6 +298,7 @@ class DataParallelPPOActor(BasePPOActor):
             skipped_zero_mask = 0
             skipped_non_finite = 0
             skip_optimizer_step = False
+            non_finite_stage = None
 
             for data in micro_batches:
                 data = data.cuda()  # actor device is cpu when using offload
@@ -315,6 +316,7 @@ class DataParallelPPOActor(BasePPOActor):
                     skipped_zero_mask += 1
                     skipped_non_finite += int(mask_non_finite)
                     skip_optimizer_step = True
+                    non_finite_stage = 'response_mask' if mask_non_finite else None
                     break
                 old_log_prob = data['old_log_probs']
                 advantages = data['advantages']
@@ -331,6 +333,7 @@ class DataParallelPPOActor(BasePPOActor):
                 if bad_policy_input:
                     skipped_non_finite += 1
                     skip_optimizer_step = True
+                    non_finite_stage = 'policy_input'
                     break
                 ratio_metrics = self._log_ratio_metrics(ppo_log_ratio, response_mask, 'ppo_log_ratio')
 
@@ -352,6 +355,7 @@ class DataParallelPPOActor(BasePPOActor):
                     if bad_ref_input:
                         skipped_non_finite += 1
                         skip_optimizer_step = True
+                        non_finite_stage = 'reference_input'
                         break
                     ratio_metrics.update(self._log_ratio_metrics(ref_log_ratio, response_mask, 'ref_log_ratio'))
                     # compute kl loss
@@ -370,6 +374,7 @@ class DataParallelPPOActor(BasePPOActor):
                 if bad_loss:
                     skipped_non_finite += 1
                     skip_optimizer_step = True
+                    non_finite_stage = 'policy_loss'
                     break
 
                 loss = policy_loss / self.gradient_accumulation
@@ -387,6 +392,10 @@ class DataParallelPPOActor(BasePPOActor):
 
             if skip_optimizer_step or valid_micro_batches == 0:
                 self.actor_optimizer.zero_grad()
+                if non_finite_stage is not None and self.config.get('abort_on_non_finite', False):
+                    raise FloatingPointError(
+                        f'Stage1 non-finite actor value detected at {non_finite_stage}; optimizer step skipped'
+                    )
                 data = {
                     'actor/grad_norm': 0.0,
                     'actor/update_skipped': 1.0,
@@ -397,6 +406,11 @@ class DataParallelPPOActor(BasePPOActor):
                 continue
 
             grad_norm, skipped_bad_grad = self._optimizer_step()
+            if skipped_bad_grad and self.config.get('abort_on_non_finite', False):
+                self.actor_optimizer.zero_grad()
+                raise FloatingPointError(
+                    'Stage1 non-finite actor gradient norm detected; optimizer step skipped'
+                )
             data = {
                 'actor/grad_norm': 0.0 if skipped_bad_grad else grad_norm.detach().item(),
                 'actor/update_skipped': 1.0 if skipped_bad_grad else 0.0,

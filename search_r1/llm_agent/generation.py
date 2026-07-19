@@ -239,6 +239,8 @@ class LLMGenerationManager:
         original_right_side = {'responses': initial_input_ids[:, []], 'responses_with_info_mask': initial_input_ids[:, []]}
         
         active_mask = torch.ones(gen_batch.batch['input_ids'].shape[0], dtype=torch.bool)
+        answered_mask = torch.zeros_like(active_mask)
+        invalid_action_stats = torch.zeros(gen_batch.batch['input_ids'].shape[0], dtype=torch.int)
         turns_stats = torch.ones(gen_batch.batch['input_ids'].shape[0], dtype=torch.int)
         valid_action_stats = torch.zeros(gen_batch.batch['input_ids'].shape[0], dtype=torch.int)
         valid_search_stats = torch.zeros(gen_batch.batch['input_ids'].shape[0], dtype=torch.int)
@@ -265,9 +267,14 @@ class LLMGenerationManager:
             responses_ids, responses_str = self.tensor_fn._example_level_pad(responses_ids, responses_str, active_mask)
 
             # Execute in environment and process observations
+            previous_active_mask = active_mask.clone()
             next_obs, dones, valid_action, is_search = self.execute_predictions(
                 responses_str, self.tokenizer.pad_token, active_mask
             )
+            dones_tensor = torch.tensor(dones, dtype=torch.bool)
+            valid_action_tensor = torch.tensor(valid_action, dtype=torch.bool)
+            answered_mask |= previous_active_mask & dones_tensor & valid_action_tensor
+            invalid_action_stats += (previous_active_mask & ~valid_action_tensor).to(torch.int)
             
             curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
             active_mask = active_mask * curr_active_mask
@@ -308,9 +315,14 @@ class LLMGenerationManager:
             responses_ids, responses_str = self.tensor_fn._example_level_pad(responses_ids, responses_str, active_mask)
 
             # # Execute in environment and process observations
+            previous_active_mask = active_mask.clone()
             _, dones, valid_action, is_search = self.execute_predictions(
                 responses_str, self.tokenizer.pad_token, active_mask, do_search=False
             )
+            dones_tensor = torch.tensor(dones, dtype=torch.bool)
+            valid_action_tensor = torch.tensor(valid_action, dtype=torch.bool)
+            answered_mask |= previous_active_mask & dones_tensor & valid_action_tensor
+            invalid_action_stats += (previous_active_mask & ~valid_action_tensor).to(torch.int)
 
             curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
             active_mask = active_mask * curr_active_mask
@@ -328,6 +340,11 @@ class LLMGenerationManager:
         meta_info['active_mask'] = active_mask.tolist()
         meta_info['valid_action_stats'] = valid_action_stats.tolist()
         meta_info['valid_search_stats'] = valid_search_stats.tolist()
+        finish_reasons = ["answer" if answered else "max_turns" for answered in answered_mask.tolist()]
+        self.trace_recorder.record_outcomes(
+            invalid_action_counts=invalid_action_stats.tolist(),
+            finish_reasons=finish_reasons,
+        )
         trace_summary = self.trace_recorder.to_summary() if self.trace_recorder else []
         meta_info['trust_r1_fault_events'] = self.fault_events
         meta_info['trust_r1_rollout_traces'] = self.trace_recorder.to_meta() if self.trace_recorder else []
@@ -368,6 +385,9 @@ class LLMGenerationManager:
         trace_summary = meta_info.get('trust_r1_trace_summary')
         if trace_summary is not None:
             non_tensors['trust_r1_trace_summary'] = np.array(trace_summary, dtype=object)
+        rollout_traces = meta_info.get('trust_r1_rollout_traces')
+        if rollout_traces is not None:
+            non_tensors['trust_r1_rollout_traces'] = np.array(rollout_traces, dtype=object)
 
         final_output = DataProto.from_dict(tensors=final_output, non_tensors=non_tensors)
         final_output.meta_info.update(meta_info)
@@ -391,16 +411,19 @@ class LLMGenerationManager:
         cur_actions, contents = self.postprocess_predictions(predictions)
         next_obs, dones, valid_action, is_search = [], [], [], []
         
-        search_queries = [content for action, content in zip(cur_actions, contents) if action == 'search']
+        search_queries = [
+            content for action, content, active in zip(cur_actions, contents, active_mask)
+            if action == 'search' and active
+        ]
         self.current_search_sample_indices = [
-            idx for idx, action in enumerate(cur_actions)
-            if action == 'search'
+            idx for idx, (action, active) in enumerate(zip(cur_actions, active_mask))
+            if action == 'search' and active
         ]
         if do_search:
             search_results = self.batch_search(search_queries)
-            assert len(search_results) == sum([1 for action in cur_actions if action == 'search'])
+            assert len(search_results) == len(search_queries)
         else:
-            search_results = [''] * sum([1 for action in cur_actions if action == 'search'])
+            search_results = [''] * len(search_queries)
 
         for i, (action, active) in enumerate(zip(cur_actions, active_mask)):
             
@@ -421,9 +444,7 @@ class LLMGenerationManager:
                     valid_action.append(1)
                     is_search.append(1)
                 else:
-                    next_obs.append(f'\nMy previous action is invalid. \
-If I want to search, I should put the query between <search> and </search>. \
-If I want to give the final answer, I should put the answer between <answer> and </answer>. Let me try again.\n')
+                    next_obs.append('\n<tool_error code="INVALID_ACTION"/>\n')
                     dones.append(0)
                     valid_action.append(0)
                     is_search.append(0)
@@ -472,6 +493,8 @@ If I want to give the final answer, I should put the answer between <answer> and
             search results which is concatenated into a string
         """
         queries = queries or []
+        if not queries:
+            return []
         results = self._batch_search(queries)['result']
         search_step = self.search_step
         results, events = apply_retrieval_faults(
@@ -480,7 +503,7 @@ If I want to give the final answer, I should put the answer between <answer> and
             config=self.retrieval_fault,
             step=search_step,
         )
-        self.search_step += len(queries)
+        self.search_step += 1
         self.fault_events.extend(event.to_dict() for event in events)
         if self.trace_recorder is not None:
             self.trace_recorder.record_searches(

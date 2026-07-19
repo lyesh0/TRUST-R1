@@ -36,6 +36,7 @@ dependencies = [
     "dill",
     "hydra-core",
     "numpy",
+    "peft==0.14.0",
     "pybind11",
     "ray",
     "tensordict",

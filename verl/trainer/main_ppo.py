@@ -23,7 +23,8 @@ import torch
 from verl.utils.reward_score import qa_em
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 from trust_r1.config import RewardConfig
-from trust_r1.reward_adapter import compute_trust_reward
+from trust_r1.process_reward import build_process_features
+from trust_r1.reward_adapter import compute_trust_reward, extract_final_answer
 import re
 import numpy as np
 
@@ -38,13 +39,22 @@ class RewardManager():
     """The reward manager.
     """
 
-    def __init__(self, tokenizer, num_examine, format_score=0., trust_reward_config=None, trust_logging_config=None) -> None:
+    def __init__(self,
+                 tokenizer,
+                 num_examine,
+                 format_score=0.,
+                 trust_reward_config=None,
+                 trust_logging_config=None,
+                 process_reward_config=None) -> None:
         self.tokenizer = tokenizer
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
         self.format_score = format_score
         self.trust_reward_config = trust_reward_config
         self.trust_logging_config = trust_logging_config or {}
+        self.process_reward_config = process_reward_config or {}
         self.last_trust_reward_metrics = {}
+        self.last_process_metrics = {}
+        self.last_stage1_records = []
         self._trajectory_write_count = 0
 
     def __call__(self, data: DataProto):
@@ -56,7 +66,11 @@ class RewardManager():
 
         reward_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
         self.last_trust_reward_metrics = {}
+        self.last_process_metrics = {}
+        self.last_stage1_records = []
         trust_reward_items = []
+        process_features = []
+        answer_scores = []
 
         already_print_data_sources = {}
 
@@ -67,11 +81,11 @@ class RewardManager():
 
             prompt_length = prompt_ids.shape[-1]
 
-            valid_prompt_length = data_item.batch['attention_mask'][:prompt_length].sum()
+            valid_prompt_length = int(data_item.batch['attention_mask'][:prompt_length].sum().item())
             valid_prompt_ids = prompt_ids[-valid_prompt_length:]
 
             response_ids = data_item.batch['responses']
-            valid_response_length = data_item.batch['attention_mask'][prompt_length:].sum()
+            valid_response_length = int(data_item.batch['attention_mask'][prompt_length:].sum().item())
             valid_response_ids = response_ids[:valid_response_length]
 
             # decode
@@ -85,7 +99,28 @@ class RewardManager():
             compute_score_fn = _select_rm_score_fn(data_source)
 
             score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth, format_score=self.format_score)
+            answer_scores.append(float(score))
             trace_summary = data_item.non_tensor_batch.get('trust_r1_trace_summary', {})
+            rollout_trace = data_item.non_tensor_batch.get('trust_r1_rollout_traces', {})
+
+            compute_process = bool(self.process_reward_config.get('compute_diagnostics', False) or
+                                   self.process_reward_config.get('enabled', False))
+            features = None
+            if compute_process:
+                features = build_process_features(
+                    response_token_ids=response_ids,
+                    valid_response_length=valid_response_length,
+                    gold_aliases=ground_truth.get('target', []),
+                    rollout_trace=rollout_trace,
+                    tokenizer=self.tokenizer,
+                    max_search_steps=int(self.process_reward_config.get('max_search_steps', 2)),
+                )
+                process_features.append(features)
+                if (self.process_reward_config.get('enabled', False)
+                        and self.process_reward_config.get('abort_on_alignment_error', True)
+                        and not features.alignment_valid):
+                    sample_id = data_item.non_tensor_batch.get('index', i)
+                    raise ValueError(f"Stage1 query/trace alignment failed for sample {sample_id}")
             trust_result = None
             if self.trust_reward_config is not None and self.trust_reward_config.get('enabled', False):
                 trust_result = compute_trust_reward(
@@ -106,7 +141,32 @@ class RewardManager():
                     trust_result=trust_result,
                 )
 
-            reward_tensor[i, valid_response_length - 1] = score
+            if valid_response_length > 0:
+                reward_tensor[i, valid_response_length - 1] = score
+
+            response_str = self.tokenizer.decode(valid_response_ids)
+            record = {
+                'question_id': str(data_item.non_tensor_batch.get('index', i)),
+                'prompt': self.tokenizer.decode(valid_prompt_ids),
+                'gold_aliases': ground_truth.get('target', []),
+                'queries': features.queries if features is not None else [],
+                'information_blocks': features.information_blocks if features is not None else [],
+                'evidence_hit_by_step': features.evidence_hits if features is not None else [],
+                'first_hit_reward_by_step': features.step_rewards.detach().cpu().tolist() if features is not None else [],
+                'alignment_valid': features.alignment_valid if features is not None else True,
+                'parse_error_count': features.parse_error_count if features is not None else 0,
+                'final_answer': extract_final_answer(response_str),
+                'answer_correct': bool(answer_scores[-1] > 0),
+                'answer_score': answer_scores[-1],
+                'valid_action': bool(trace_summary.get('valid_action', True)) if isinstance(trace_summary, dict) else True,
+                'invalid_action_count': int(trace_summary.get('invalid_action_count', 0)) if isinstance(trace_summary, dict) else 0,
+                'finish_reason': trace_summary.get('finish_reason', 'max_turns') if isinstance(trace_summary, dict) else 'max_turns',
+                'search_count': int(trace_summary.get('search_count', 0)) if isinstance(trace_summary, dict) else 0,
+                'trust_r1_trace_summary': trace_summary if isinstance(trace_summary, dict) else {},
+                'reward_breakdown': trust_result.reward.to_dict() if trust_result is not None else None,
+                'response_text': response_str,
+            }
+            self.last_stage1_records.append(record)
 
             if data_source not in already_print_data_sources:
                 already_print_data_sources[data_source] = 0
@@ -116,8 +176,79 @@ class RewardManager():
                 print(sequences_str)
 
         self.last_trust_reward_metrics = self._build_trust_reward_metrics(trust_reward_items)
+        if process_features:
+            data.batch['process_step_rewards'] = torch.stack([item.step_rewards for item in process_features])
+            data.batch['query_step_ids'] = torch.stack([item.query_step_ids for item in process_features])
+            data.batch['process_evidence_hits'] = torch.tensor(
+                [item.evidence_hits for item in process_features],
+                dtype=torch.bool,
+                device=reward_tensor.device,
+            )
+            data.batch['process_alignment_valid'] = torch.tensor(
+                [item.alignment_valid for item in process_features],
+                dtype=torch.bool,
+                device=reward_tensor.device,
+            )
+            search_count = sum(len(item.queries) for item in process_features)
+            raw_hits = sum(sum(item.evidence_hits[:len(item.queries)]) for item in process_features)
+            first_hits = sum(item.step_rewards[:len(item.queries)].sum().item() for item in process_features)
+            self.last_process_metrics = {
+                'process/raw_hit_rate': raw_hits / search_count if search_count else 0.0,
+                'process/first_hit_rate': first_hits / search_count if search_count else 0.0,
+                'process/span_alignment_error_count': float(sum(not item.alignment_valid for item in process_features)),
+                'process/parse_error_count': float(sum(item.parse_error_count for item in process_features)),
+                'answer/em': float(np.mean(answer_scores)) if answer_scores else 0.0,
+            }
 
         return reward_tensor
+
+    def write_stage1_records(self, *, split, step, local_advantages=None, query_step_ids=None, weight=0.2):
+        if not self.trust_logging_config.get('enabled', False):
+            return
+        if not self.trust_logging_config.get('write_trajectories', False):
+            return
+        output_dir = self.trust_logging_config.get('output_dir')
+        if not output_dir or not self.last_stage1_records:
+            return
+
+        if split == 'train':
+            path = Path(output_dir) / 'train_trajectories.jsonl'
+            limit = int(self.trust_logging_config.get('sample_limit_per_call', 32) or 0)
+            records = self.last_stage1_records if limit < 0 else self.last_stage1_records[:limit]
+        elif split == 'validation':
+            path = Path(output_dir) / f'validation_step_{int(step)}.jsonl'
+            records = self.last_stage1_records
+        else:
+            raise ValueError(f'unsupported Stage1 trajectory split: {split}')
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rollout_counts = {}
+        with path.open('a', encoding='utf-8') as f:
+            for index, original in enumerate(records):
+                record = dict(original)
+                question_id = record['question_id']
+                rollout_id = rollout_counts.get(question_id, 0)
+                rollout_counts[question_id] = rollout_id + 1
+                record['rollout_id'] = rollout_id
+                record['trainer_step'] = int(step)
+                record['local_z_by_step'] = []
+                if local_advantages is not None and query_step_ids is not None and weight > 0:
+                    max_step = len(record.get('first_hit_reward_by_step', []))
+                    for step_id in range(1, max_step + 1):
+                        mask = query_step_ids[index] == step_id
+                        local_sum = local_advantages[index, mask].sum().item() if mask.any().item() else 0.0
+                        record['local_z_by_step'].append(local_sum / weight)
+                f.write(json.dumps(record, ensure_ascii=False) + '\n')
+
+    def reset_stage1_validation_records(self, step):
+        if not self.trust_logging_config.get('enabled', False):
+            return
+        output_dir = self.trust_logging_config.get('output_dir')
+        if not output_dir:
+            return
+        path = Path(output_dir) / f'validation_step_{int(step)}.jsonl'
+        if path.exists():
+            path.unlink()
 
     def _build_trust_reward_metrics(self, trust_reward_items):
         if not trust_reward_items:
@@ -259,11 +390,13 @@ def main_task(config):
 
     trust_reward_config = config.get('trust_reward', None)
     trust_logging_config = config.get('trust_r1_logging', None)
+    process_reward_config = config.get('process_reward', None)
     reward_fn = RewardManager(
         tokenizer=tokenizer,
         num_examine=0,
         trust_reward_config=trust_reward_config,
         trust_logging_config=trust_logging_config,
+        process_reward_config=process_reward_config,
     )
 
     # Note that we always use function-based RM for validation
@@ -272,6 +405,7 @@ def main_task(config):
         num_examine=config.trainer.get('val_num_examine', 1),
         trust_reward_config=trust_reward_config,
         trust_logging_config=trust_logging_config,
+        process_reward_config=process_reward_config,
     )
 
     resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)

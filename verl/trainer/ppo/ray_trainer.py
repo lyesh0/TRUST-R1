@@ -17,6 +17,9 @@ This trainer supports model-agonistic model initialization with huggingface
 """
 
 import os
+import random
+import subprocess
+import traceback
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -42,6 +45,7 @@ from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seql
 import re
 from search_r1.llm_agent.generation import LLMGenerationManager, GenerationConfig
 from trust_r1.metrics import aggregate_trace_summary_metrics
+from trust_r1.process_reward import add_query_local_advantage
 from trust_r1.search_adapter import fault_config_from_mapping
 
 WorkerType = Type[Worker]
@@ -122,7 +126,8 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
     return data, metrics
 
 
-def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1):
+def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1,
+                      process_reward_config=None):
     # prepare response group
     # TODO: add other ways to estimate advantages
     if adv_estimator == 'gae':
@@ -154,7 +159,31 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         data.batch['returns'] = returns
     else:
         raise NotImplementedError
-    return data
+    process_metrics = {}
+    if 'process_step_rewards' in data.batch and 'query_step_ids' in data.batch:
+        responses = data.batch['responses']
+        response_length = responses.size(-1)
+        if 'loss_mask' in data.batch:
+            loss_mask = data.batch['loss_mask']
+        else:
+            loss_mask = data.batch['attention_mask'][:, -response_length:]
+        config = process_reward_config or {}
+        enabled = bool(config.get('enabled', False))
+        weight = float(config.get('weight', 0.2)) if enabled else 0.0
+        advantages, local_advantages, process_metrics = add_query_local_advantage(
+            answer_advantages=data.batch['advantages'],
+            step_rewards=data.batch['process_step_rewards'],
+            query_step_ids=data.batch['query_step_ids'],
+            uids=data.non_tensor_batch['uid'],
+            loss_mask=loss_mask,
+            weight=weight,
+            z_clip=float(config.get('z_clip', 2.0)),
+        )
+        data.batch['advantages'] = advantages
+        data.batch['local_advantages'] = local_advantages
+    else:
+        data.batch['local_advantages'] = torch.zeros_like(data.batch['advantages'])
+    return data, process_metrics
 
 
 def reduce_metrics(metrics: dict):
@@ -168,6 +197,86 @@ def compute_trust_r1_trace_metrics(batch: DataProto) -> dict:
     if summaries is None:
         return {}
     return aggregate_trace_summary_metrics(summaries.tolist() if hasattr(summaries, 'tolist') else summaries)
+
+
+def _token_f1(prediction, aliases):
+    from verl.utils.reward_score.qa_em import normalize_answer
+
+    prediction_tokens = normalize_answer(prediction or '').split()
+    if isinstance(aliases, str):
+        aliases = [aliases]
+    best = 0.0
+    for alias in aliases or []:
+        alias_tokens = normalize_answer(str(alias)).split()
+        if not prediction_tokens or not alias_tokens:
+            continue
+        common = defaultdict(int)
+        for token in prediction_tokens:
+            common[token] += 1
+        overlap = 0
+        for token in alias_tokens:
+            if common[token] > 0:
+                overlap += 1
+                common[token] -= 1
+        if overlap:
+            precision = overlap / len(prediction_tokens)
+            recall = overlap / len(alias_tokens)
+            best = max(best, 2 * precision * recall / (precision + recall))
+    return best
+
+
+def compute_stage1_validation_metrics(records):
+    if not records:
+        return {}
+    count = len(records)
+    any_hit_count = 0
+    evidence_correct = 0
+    second_search_count = 0
+    incremental_count = 0
+    repeated_count = 0
+    first_hit_count = 0
+    search_total = 0
+    f1_total = 0.0
+    quadrants = defaultdict(int)
+    for record in records:
+        hits = list(record.get('evidence_hit_by_step', []))
+        search_count = int(record.get('search_count', 0))
+        actual_hits = hits[:search_count]
+        first_hit = bool(actual_hits[0]) if actual_hits else False
+        any_hit = any(actual_hits)
+        correct = bool(record.get('answer_correct', False))
+        first_hit_count += int(first_hit)
+        any_hit_count += int(any_hit)
+        evidence_correct += int(any_hit and correct)
+        search_total += search_count
+        if search_count >= 2:
+            second_search_count += 1
+            incremental_count += int(not first_hit and len(actual_hits) > 1 and actual_hits[1])
+        normalized_queries = [' '.join(str(query).lower().split()) for query in record.get('queries', [])]
+        repeated_count += int(len(normalized_queries) != len(set(normalized_queries)))
+        f1_total += _token_f1(record.get('final_answer', ''), record.get('gold_aliases', []))
+        quadrants[('evidence' if any_hit else 'no_evidence', 'correct' if correct else 'wrong')] += 1
+
+    metrics = {
+        'val/stage1/valid_action_ratio': sum(bool(item.get('valid_action', False)) for item in records) / count,
+        'val/stage1/finish_ratio': sum(item.get('finish_reason') == 'answer' for item in records) / count,
+        'val/stage1/exact_match': sum(bool(item.get('answer_correct', False)) for item in records) / count,
+        'val/stage1/token_f1': f1_total / count,
+        'val/stage1/first_search_success': first_hit_count / count,
+        'val/stage1/any_search_success': any_hit_count / count,
+        'val/stage1/incremental_evidence_rate': incremental_count / second_search_count if second_search_count else 0.0,
+        'val/stage1/average_search_count': search_total / count,
+        'val/stage1/repeated_query_rate': repeated_count / count,
+        'val/stage1/evidence_utilization': evidence_correct / any_hit_count if any_hit_count else 0.0,
+        'val/stage1/retrieved_but_wrong': (any_hit_count - evidence_correct) / any_hit_count if any_hit_count else 0.0,
+    }
+    for evidence in ('no_evidence', 'evidence'):
+        for outcome in ('wrong', 'correct'):
+            key = f'val/stage1/quadrant_{evidence}_{outcome}'
+            value = quadrants[(evidence, outcome)]
+            metrics[f'{key}_count'] = float(value)
+            metrics[f'{key}_rate'] = value / count
+    return metrics
 
 
 def _compute_response_info(batch):
@@ -343,6 +452,14 @@ class RayPPOTrainer(object):
         self.reward_fn = reward_fn
         self.val_reward_fn = val_reward_fn
 
+        seed = int(config.trainer.get('seed', 42))
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        self.seed = seed
+        self._last_validation_step = None
+        self._stage1_initial_informative_groups = 0.0
+
         self.hybrid_engine = config.actor_rollout_ref.hybrid_engine
         assert self.hybrid_engine, 'Currently, only support hybrid engine'
 
@@ -394,7 +511,8 @@ class RayPPOTrainer(object):
             if self.config.data.train_data_num > len(self.train_dataset.dataframe):
                 print(f"[WARNING] training dataset size is smaller than desired size. Using the dataset as the original size {len(self.train_dataset.dataframe)}")
             else:
-                self.train_dataset.dataframe = self.train_dataset.dataframe.sample(self.config.data.train_data_num, random_state=42)
+                self.train_dataset.dataframe = self.train_dataset.dataframe.sample(
+                    self.config.data.train_data_num, random_state=self.seed)
         print(f"filtered training dataset size: {len(self.train_dataset.dataframe)}")
 
         self.train_dataloader = DataLoader(dataset=self.train_dataset,
@@ -414,7 +532,8 @@ class RayPPOTrainer(object):
             if self.config.data.val_data_num > len(self.val_dataset.dataframe):
                 print(f"[WARNING] validation dataset size is smaller than desired size. Using the dataset as the original size {len(self.val_dataset.dataframe)}")
             else:
-                self.val_dataset.dataframe = self.val_dataset.dataframe.sample(self.config.data.val_data_num, random_state=42)
+                self.val_dataset.dataframe = self.val_dataset.dataframe.sample(
+                    self.config.data.val_data_num, random_state=self.seed)
         print(f"filtered validation dataset size: {len(self.val_dataset.dataframe)}")
 
         self.val_dataloader = DataLoader(dataset=self.val_dataset,
@@ -443,7 +562,7 @@ class RayPPOTrainer(object):
             self.config.actor_rollout_ref.actor.optim.total_training_steps = total_training_steps
             self.config.critic.optim.total_training_steps = total_training_steps
 
-    def _validate(self):
+    def _validate(self, step=None):
         """
         The training loop of PPO with global metric computation.
         Accumulates metrics across all batches before computing final statistics.
@@ -451,6 +570,10 @@ class RayPPOTrainer(object):
         import torch
         reward_tensor_lst = []
         data_source_lst = []
+        stage1_records = []
+        validation_step = self.global_steps if step is None else int(step)
+        if hasattr(self.val_reward_fn, 'reset_stage1_validation_records'):
+            self.val_reward_fn.reset_stage1_validation_records(validation_step)
 
         gen_config = GenerationConfig(
             max_turns=self.config.max_turns,
@@ -505,6 +628,8 @@ class RayPPOTrainer(object):
                 # evaluate using reward_function
                 # for certain reward function (e.g. sandbox), the generation can overlap with reward
                 reward_tensor = self.val_reward_fn(test_batch)
+                stage1_records.extend(getattr(self.val_reward_fn, 'last_stage1_records', []))
+                self.val_reward_fn.write_stage1_records(split='validation', step=validation_step)
 
                 reward_tensor_lst.append(reward_tensor)
                 data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
@@ -539,6 +664,8 @@ class RayPPOTrainer(object):
                     # evaluate using reward_function
                     # for certain reward function (e.g. sandbox), the generation can overlap with reward
                     reward_tensor = self.val_reward_fn(test_batch)
+                    stage1_records.extend(getattr(self.val_reward_fn, 'last_stage1_records', []))
+                    self.val_reward_fn.write_stage1_records(split='validation', step=validation_step)
 
                     reward_tensor_lst.append(reward_tensor)
                     data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
@@ -557,6 +684,9 @@ class RayPPOTrainer(object):
         metric_dict = {}
         for data_source, rewards in data_source_reward.items():
             metric_dict[f'val/test_score/{data_source}'] = np.mean(rewards)
+
+        metric_dict.update(compute_stage1_validation_metrics(stage1_records))
+        self._last_validation_step = validation_step
 
         return metric_dict
 
@@ -648,6 +778,58 @@ class RayPPOTrainer(object):
                 self.config.trainer.default_hdfs_dir, 'critic')
             self.critic_wg.save_checkpoint(critic_local_path, critic_remote_path)
 
+    def _write_actor_diagnostic(self, batch, error):
+        output_dir = self.config.get('trust_r1_logging', {}).get('output_dir', None)
+        if not output_dir:
+            output_dir = self.config.trainer.default_local_dir
+        diagnostic_dir = os.path.join(
+            str(output_dir), 'diagnostics', f'non_finite_step_{self.global_steps}')
+        os.makedirs(diagnostic_dir, exist_ok=True)
+        try:
+            commit = subprocess.check_output(
+                ['git', 'rev-parse', 'HEAD'], text=True, cwd=os.getcwd()).strip()
+        except (OSError, subprocess.SubprocessError):
+            commit = 'unknown'
+
+        save_freq = int(self.config.trainer.save_freq)
+        previous_step = ((self.global_steps - 1) // save_freq) * save_freq if save_freq > 0 else 0
+        if previous_step > 0:
+            healthy_checkpoint = os.path.join(
+                self.config.trainer.default_local_dir, 'actor', f'global_step_{previous_step}')
+        else:
+            healthy_checkpoint = str(self.config.actor_rollout_ref.model.path)
+
+        tensor_summary = {}
+        for key in ('process_step_rewards', 'query_step_ids', 'local_advantages', 'advantages',
+                    'old_log_probs', 'ref_log_prob', 'loss_mask'):
+            if key not in batch.batch:
+                continue
+            value = batch.batch[key].detach().float().cpu()
+            finite = torch.isfinite(value)
+            tensor_summary[key] = {
+                'shape': list(value.shape),
+                'finite': bool(finite.all().item()),
+                'non_finite_count': int((~finite).sum().item()),
+                'min': float(value[finite].min().item()) if finite.any().item() else None,
+                'max': float(value[finite].max().item()) if finite.any().item() else None,
+            }
+        summary = {
+            'git_commit': commit,
+            'trainer_step': int(self.global_steps),
+            'error': repr(error),
+            'traceback': traceback.format_exc(),
+            'last_healthy_checkpoint': healthy_checkpoint,
+            'question_ids': [str(value) for value in batch.non_tensor_batch.get('index', [])],
+            'uids': [str(value) for value in batch.non_tensor_batch.get('uid', [])],
+            'tensor_summary': tensor_summary,
+            'config': OmegaConf.to_container(self.config, resolve=True),
+        }
+        with open(os.path.join(diagnostic_dir, 'summary.json'), 'w', encoding='utf-8') as file:
+            json.dump(summary, file, ensure_ascii=False, indent=2, default=str)
+        with open(os.path.join(diagnostic_dir, 'rollouts.jsonl'), 'w', encoding='utf-8') as file:
+            for record in getattr(self.reward_fn, 'last_stage1_records', []):
+                file.write(json.dumps(record, ensure_ascii=False, default=str) + '\n')
+
     def _balance_batch(self, batch: DataProto, metrics, logging_prefix='global_seqlen'):
         """Reorder the data on single controller such that each dp rank gets similar total tokens"""
         attention_mask = batch.batch['attention_mask']
@@ -677,7 +859,7 @@ class RayPPOTrainer(object):
         # perform validation before training
         # currently, we only support validation using the reward_function.
         if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True):
-            val_metrics = self._validate()
+            val_metrics = self._validate(step=0)
             pprint(f'Initial validation metrics: {val_metrics}')
             logger.log(data=val_metrics, step=self.global_steps)
             if self.config.trainer.get('val_only', False):
@@ -807,6 +989,7 @@ class RayPPOTrainer(object):
                         # we combine with rule-based rm
                         reward_tensor = self.reward_fn(batch)
                         metrics.update(getattr(self.reward_fn, 'last_trust_reward_metrics', {}))
+                        metrics.update(getattr(self.reward_fn, 'last_process_metrics', {}))
                         batch.batch['token_level_scores'] = reward_tensor
 
                         # compute rewards. apply_kl_penalty if available
@@ -818,13 +1001,36 @@ class RayPPOTrainer(object):
                         else:
                             batch.batch['token_level_rewards'] = batch.batch['token_level_scores']
 
+                        if self.config.do_search and self.config.actor_rollout_ref.actor.state_masking:
+                            batch, metrics = self._create_loss_mask(batch, metrics)
+
                         # compute advantages, executed on the driver process
-                        batch = compute_advantage(batch,
-                                                  adv_estimator=self.config.algorithm.adv_estimator,
-                                                  gamma=self.config.algorithm.gamma,
-                                                  lam=self.config.algorithm.lam,
-                                                  num_repeat=(self.config.actor_rollout_ref.rollout.n *
-                                                              self.config.actor_rollout_ref.rollout.n_agent))
+                        batch, process_metrics = compute_advantage(
+                            batch,
+                            adv_estimator=self.config.algorithm.adv_estimator,
+                            gamma=self.config.algorithm.gamma,
+                            lam=self.config.algorithm.lam,
+                            num_repeat=(self.config.actor_rollout_ref.rollout.n *
+                                        self.config.actor_rollout_ref.rollout.n_agent),
+                            process_reward_config=self.config.get('process_reward', None),
+                        )
+                        metrics.update(process_metrics)
+                        if (self.config.get('process_reward', {}).get('enabled', False)
+                                and self.global_steps <= 10):
+                            self._stage1_initial_informative_groups += process_metrics.get(
+                                'process/informative_group_count', 0.0)
+                            if self.global_steps == 10 and self._stage1_initial_informative_groups == 0:
+                                raise RuntimeError(
+                                    'Stage1 S1-B1 received no informative process-reward groups in steps 1-10'
+                                )
+                        process_config = self.config.get('process_reward', {})
+                        self.reward_fn.write_stage1_records(
+                            split='train',
+                            step=self.global_steps,
+                            local_advantages=batch.batch.get('local_advantages'),
+                            query_step_ids=batch.batch.get('query_step_ids'),
+                            weight=float(process_config.get('weight', 0.2)),
+                        )
 
                     # update critic
                     if self.use_critic:
@@ -837,9 +1043,12 @@ class RayPPOTrainer(object):
                     if self.config.trainer.critic_warmup <= self.global_steps:
                         # update actor
                         with _timer('update_actor', timing_raw):
-                            if self.config.do_search and self.config.actor_rollout_ref.actor.state_masking:
-                                batch, metrics = self._create_loss_mask(batch, metrics)
-                            actor_output = self.actor_rollout_wg.update_actor(batch)
+                            try:
+                                actor_output = self.actor_rollout_wg.update_actor(batch)
+                            except Exception as error:
+                                if 'non-finite' in str(error).lower():
+                                    self._write_actor_diagnostic(batch, error)
+                                raise
                         actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
                         metrics.update(actor_output_metrics)
 
@@ -847,7 +1056,7 @@ class RayPPOTrainer(object):
                     if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and \
                         self.global_steps % self.config.trainer.test_freq == 0:
                         with _timer('testing', timing_raw):
-                            val_metrics: dict = self._validate()
+                            val_metrics: dict = self._validate(step=self.global_steps)
                         metrics.update(val_metrics)
 
                     if self.config.trainer.save_freq > 0 and \
@@ -867,8 +1076,9 @@ class RayPPOTrainer(object):
                 if self.global_steps >= self.total_training_steps:
 
                     # perform validation after training
-                    if self.val_reward_fn is not None:
-                        val_metrics = self._validate()
+                    completed_step = self.global_steps - 1
+                    if self.val_reward_fn is not None and self._last_validation_step != completed_step:
+                        val_metrics = self._validate(step=completed_step)
                         pprint(f'Final validation metrics: {val_metrics}')
                         logger.log(data=val_metrics, step=self.global_steps)
                     return

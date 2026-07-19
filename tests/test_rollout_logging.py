@@ -84,3 +84,18 @@ def test_rollout_trace_recorder_validates_sample_index():
     recorder = RolloutTraceRecorder(batch_size=1)
     with pytest.raises(IndexError):
         recorder.record_searches(sample_indices=[1], queries=["q"], events=[event()], step=0)
+
+
+def test_rollout_trace_recorder_records_outcomes():
+    recorder = RolloutTraceRecorder(batch_size=2)
+    recorder.record_outcomes(
+        invalid_action_counts=[0, 2],
+        finish_reasons=["answer", "max_turns"],
+    )
+
+    traces = recorder.to_meta()
+    summaries = recorder.to_summary()
+    assert traces[0]["valid_action"] is True
+    assert traces[0]["finish_reason"] == "answer"
+    assert traces[1]["invalid_action_count"] == 2
+    assert summaries[1]["valid_action"] is False

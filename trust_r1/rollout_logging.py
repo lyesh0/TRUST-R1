@@ -27,6 +27,8 @@ class RolloutSearchTrace:
 class RolloutTrace:
     sample_index: int
     searches: list[RolloutSearchTrace] = field(default_factory=list)
+    invalid_action_count: int = 0
+    finish_reason: str = "max_turns"
 
     def add_search(self, search: RolloutSearchTrace) -> None:
         self.searches.append(search)
@@ -35,6 +37,9 @@ class RolloutTrace:
         return {
             "sample_index": self.sample_index,
             "searches": [search.to_dict() for search in self.searches],
+            "invalid_action_count": self.invalid_action_count,
+            "valid_action": self.invalid_action_count == 0,
+            "finish_reason": self.finish_reason,
         }
 
 
@@ -65,6 +70,9 @@ def summarize_search_trace(trace: RolloutTrace) -> dict[str, Any]:
         "changed_query_after_fault": changed_query_after_fault,
         "duplicate_query_count": count_duplicate_queries(queries),
         "fault_types": [search.fault_type for search in trace.searches if search.fault_type != "clean"],
+        "invalid_action_count": trace.invalid_action_count,
+        "valid_action": trace.invalid_action_count == 0,
+        "finish_reason": trace.finish_reason,
     }
 
 
@@ -106,6 +114,22 @@ class RolloutTraceRecorder:
                     seed=event.seed,
                 )
             )
+
+    def record_outcomes(
+        self,
+        *,
+        invalid_action_counts: Sequence[int],
+        finish_reasons: Sequence[str],
+    ) -> None:
+        if len(invalid_action_counts) != len(self.traces) or len(finish_reasons) != len(self.traces):
+            raise ValueError("outcome arrays must match recorder batch size")
+        for trace, invalid_count, finish_reason in zip(
+            self.traces, invalid_action_counts, finish_reasons
+        ):
+            if finish_reason not in {"answer", "max_turns"}:
+                raise ValueError(f"unsupported finish reason: {finish_reason}")
+            trace.invalid_action_count = int(invalid_count)
+            trace.finish_reason = finish_reason
 
     def to_meta(self) -> list[dict[str, Any]]:
         return [trace.to_dict() for trace in self.traces]

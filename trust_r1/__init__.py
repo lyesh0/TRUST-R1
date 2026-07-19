@@ -12,6 +12,7 @@ __all__ = [
     "FaultConfig",
     "FaultEvent",
     "ParsedSolution",
+    "ProcessFeatures",
     "RetrievalFaultInjector",
     "RewardBreakdown",
     "RewardConfig",
@@ -24,9 +25,18 @@ __all__ = [
     "TrajectoryMetrics",
     "TrustRewardResult",
     "aggregate_trace_summary_metrics",
+    "add_query_local_advantage",
+    "build_process_features",
     "aggregate_trajectory_metrics",
     "compute_reward_breakdown",
     "compute_trust_reward",
     "parse_solution",
     "summarize_search_trace",
 ]
+
+
+def __getattr__(name):
+    if name in {"ProcessFeatures", "add_query_local_advantage", "build_process_features"}:
+        from . import process_reward
+        return getattr(process_reward, name)
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))

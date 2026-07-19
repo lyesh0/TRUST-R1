@@ -30,6 +30,7 @@ actor_rollout_ref:
     use_dynamic_bsz: False
     ppo_max_token_len_per_gpu: 16384 # n * ${data.max_prompt_length} + ${data.max_response_length}
     grad_clip: 1.0
+    abort_on_non_finite: false
     state_masking: False
     clip_ratio: 0.2
     entropy_coeff: 0.001
@@ -66,6 +67,7 @@ actor_rollout_ref:
     ulysses_sequence_parallel_size: ${actor_rollout_ref.actor.ulysses_sequence_parallel_size} # sp size
   rollout:
     name: vllm
+    seed: 42
     temperature: 1.0
     top_k: -1 # 0 for hf rollout, -1 for vllm rollout
     top_p: 0.95
@@ -169,6 +171,14 @@ trust_r1_logging:
   sample_limit_per_call: 32
   write_trajectories: false
 
+process_reward:
+  enabled: false
+  compute_diagnostics: false
+  weight: 0.2
+  z_clip: 2.0
+  max_search_steps: 2
+  abort_on_alignment_error: true
+
 algorithm:
   gamma: 1.0
   lam: 1.0
@@ -183,6 +193,7 @@ algorithm:
     end_state_marker: "</information>"
 
 trainer:
+  seed: 42
   total_epochs: 30
   total_training_steps: null
   project_name: verl_examples
