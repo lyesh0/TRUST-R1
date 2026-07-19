@@ -148,7 +148,8 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         response_mask = attention_mask[:, -response_length:]
         advantages, returns = core_algos.compute_grpo_outcome_advantage(token_level_rewards=token_level_rewards,
                                                                         eos_mask=response_mask,
-                                                                        index=index)
+                                                                        index=index,
+                                                                        expected_group_size=num_repeat)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     else:
@@ -822,7 +823,8 @@ class RayPPOTrainer(object):
                                                   adv_estimator=self.config.algorithm.adv_estimator,
                                                   gamma=self.config.algorithm.gamma,
                                                   lam=self.config.algorithm.lam,
-                                                  num_repeat=self.config.actor_rollout_ref.rollout.n)
+                                                  num_repeat=(self.config.actor_rollout_ref.rollout.n *
+                                                              self.config.actor_rollout_ref.rollout.n_agent))
 
                     # update critic
                     if self.use_critic:

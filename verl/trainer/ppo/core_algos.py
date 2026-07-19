@@ -25,6 +25,10 @@ from collections import defaultdict
 import verl.utils.torch_functional as verl_F
 
 
+# Keep exponential inputs in the finite range used by upstream veRL PR #1779.
+EXPONENTIAL_LOG_RATIO_CLAMP = 20.0
+
+
 class AdaptiveKLController:
     """
     Adaptive KL controller described in the paper:
@@ -111,6 +115,7 @@ def compute_gae_advantage_return(token_level_rewards: torch.Tensor, values: torc
 def compute_grpo_outcome_advantage(token_level_rewards: torch.Tensor,
                                    eos_mask: torch.Tensor,
                                    index: torch.Tensor,
+                                   expected_group_size: int = None,
                                    epsilon: float = 1e-6):
     """
     Compute advantage for GRPO, operating only on Outcome reward 
@@ -139,13 +144,22 @@ def compute_grpo_outcome_advantage(token_level_rewards: torch.Tensor,
         bsz = scores.shape[0]
         for i in range(bsz):
             id2score[index[i]].append(scores[i])
+        if expected_group_size is not None:
+            invalid_groups = {idx: len(group) for idx, group in id2score.items()
+                              if len(group) != expected_group_size}
+            if invalid_groups:
+                preview = list(invalid_groups.items())[:5]
+                raise ValueError(f"GRPO group size mismatch: expected {expected_group_size}, got {preview}")
         for idx in id2score:
             if len(id2score[idx]) == 1:
-                id2mean[idx] = torch.tensor(0.0)
-                id2std[idx] = torch.tensor(1.0)
+                id2mean[idx] = scores.new_tensor(0.0)
+                id2std[idx] = scores.new_tensor(1.0)
             elif len(id2score[idx]) > 1:
-                id2mean[idx] = torch.mean(torch.tensor(id2score[idx]))
-                id2std[idx] = torch.std(torch.tensor([id2score[idx]]))
+                group_scores = torch.stack(id2score[idx])
+                if not torch.isfinite(group_scores).all().item():
+                    raise FloatingPointError(f"non-finite reward in GRPO group: {idx}")
+                id2mean[idx] = torch.mean(group_scores)
+                id2std[idx] = torch.std(group_scores)
             else:
                 raise ValueError(f"no score in prompt index: {idx}")
         for i in range(bsz):
@@ -182,8 +196,10 @@ def compute_policy_loss(old_log_prob, log_prob, advantages, eos_mask, cliprange)
             a float number indicating the fraction of policy gradient loss being clipped
 
     """
-    negative_approx_kl = torch.nan_to_num(log_prob - old_log_prob, nan=0.0, posinf=20.0, neginf=-20.0)
-    ratio = torch.exp(torch.clamp(negative_approx_kl, min=-20.0, max=20.0))
+    negative_approx_kl = torch.clamp(log_prob - old_log_prob,
+                                     min=-EXPONENTIAL_LOG_RATIO_CLAMP,
+                                     max=EXPONENTIAL_LOG_RATIO_CLAMP)
+    ratio = torch.exp(negative_approx_kl)
     ppo_kl = verl_F.masked_mean(-negative_approx_kl, eos_mask)
 
     pg_losses = -advantages * ratio
@@ -262,8 +278,9 @@ def kl_penalty(logprob: torch.FloatTensor, ref_logprob: torch.FloatTensor, kl_pe
     # J. Schulman. Approximating kl divergence, 2020.
     # # URL http://joschu.net/blog/kl-approx.html.
     if kl_penalty == 'low_var_kl':
-        kl = torch.nan_to_num(ref_logprob - logprob, nan=0.0, posinf=20.0, neginf=-20.0)
-        kl = torch.clamp(kl, min=-20.0, max=20.0)
+        kl = torch.clamp(ref_logprob - logprob,
+                         min=-EXPONENTIAL_LOG_RATIO_CLAMP,
+                         max=EXPONENTIAL_LOG_RATIO_CLAMP)
         ratio = torch.exp(kl)
         kld = (ratio - kl - 1).contiguous()
         return torch.clamp(kld, min=-10, max=10)

@@ -16,12 +16,18 @@ VAL_DATA_NUM="${VAL_DATA_NUM:-100}"
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-32}"
 VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-20}"
 N_AGENT="${N_AGENT:-5}"
-PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-16}"
-PPO_MICRO_BATCH_SIZE="${PPO_MICRO_BATCH_SIZE:-4}"
-ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE="${ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE:-8}"
-REF_LOG_PROB_MICRO_BATCH_SIZE="${REF_LOG_PROB_MICRO_BATCH_SIZE:-8}"
+# With four GPUs: 160 Actor trajectories, local mini=8, local micro=2, accumulation=4.
+PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-32}"
+PPO_MICRO_BATCH_SIZE="${PPO_MICRO_BATCH_SIZE:-8}"
+ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE="${ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE:-16}"
+REF_LOG_PROB_MICRO_BATCH_SIZE="${REF_LOG_PROB_MICRO_BATCH_SIZE:-16}"
 ACTOR_LR="${ACTOR_LR:-5e-7}"
 LR_WARMUP_RATIO="${LR_WARMUP_RATIO:-0.1}"
+GRAD_CLIP="${GRAD_CLIP:-1.0}"
+CLIP_RATIO="${CLIP_RATIO:-0.2}"
+KL_LOSS_COEF="${KL_LOSS_COEF:-0.001}"
+PPO_EPOCHS="${PPO_EPOCHS:-1}"
+ROLLOUT_DTYPE="${ROLLOUT_DTYPE:-bfloat16}"
 TEMPERATURE="${TEMPERATURE:-0.8}"
 TOP_P="${TOP_P:-0.95}"
 TOPK="${TOPK:-3}"
@@ -55,9 +61,11 @@ Default pilot-safe config:
   MODEL_PATH=/root/autodl-tmp/models/Qwen2.5-3B
   TRAIN_DATA_NUM=10000 VAL_DATA_NUM=100
   TRAIN_BATCH_SIZE=32 VAL_BATCH_SIZE=20 N_AGENT=5
-  PPO_MINI_BATCH_SIZE=16 PPO_MICRO_BATCH_SIZE=4
-  ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE=8 REF_LOG_PROB_MICRO_BATCH_SIZE=8
-  ACTOR_LR=5e-7 LR_WARMUP_RATIO=0.1
+  PPO_MINI_BATCH_SIZE=32 PPO_MICRO_BATCH_SIZE=8
+  ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE=16 REF_LOG_PROB_MICRO_BATCH_SIZE=16
+  ACTOR_LR=5e-7 LR_WARMUP_RATIO=0.1 GRAD_CLIP=1.0
+  CLIP_RATIO=0.2 KL_LOSS_COEF=0.001 PPO_EPOCHS=1
+  ROLLOUT_DTYPE=bfloat16
   TEMPERATURE=0.8 TOP_P=0.95
   MAX_START_LENGTH=1024 MAX_PROMPT_LENGTH=2560
   MAX_RESPONSE_LENGTH=256 MAX_OBS_LENGTH=384 MAX_TURNS=2
@@ -132,6 +140,45 @@ check_batch_config() {
   fi
   assert_divisible "$PPO_MINI_BATCH_SIZE" "$PPO_MICRO_BATCH_SIZE" "ppo_mini_batch_size % ppo_micro_batch_size"
   assert_divisible "$expanded_rollout_batch" "$PPO_MINI_BATCH_SIZE" "expanded_rollout_batch % ppo_mini_batch_size"
+  if (( PPO_EPOCHS != 1 )); then
+    echo "Config check failed: this veRL FSDP actor requires ppo_epochs=1" >&2
+    exit 5
+  fi
+
+  ACTOR_LR="$ACTOR_LR" LR_WARMUP_RATIO="$LR_WARMUP_RATIO" GRAD_CLIP="$GRAD_CLIP" \
+    CLIP_RATIO="$CLIP_RATIO" KL_LOSS_COEF="$KL_LOSS_COEF" TEMPERATURE="$TEMPERATURE" \
+    TOP_P="$TOP_P" ROLLOUT_DTYPE="$ROLLOUT_DTYPE" python3 - <<'PY'
+import math
+import os
+
+
+def number(name):
+    try:
+        value = float(os.environ[name])
+    except ValueError:
+        raise SystemExit("Config check failed: %s must be numeric" % name.lower())
+    if not math.isfinite(value):
+        raise SystemExit("Config check failed: %s must be finite" % name.lower())
+    return value
+
+
+if number("ACTOR_LR") <= 0:
+    raise SystemExit("Config check failed: actor_lr must be positive")
+if not 0 <= number("LR_WARMUP_RATIO") <= 1:
+    raise SystemExit("Config check failed: lr_warmup_ratio must be in [0, 1]")
+if number("GRAD_CLIP") <= 0:
+    raise SystemExit("Config check failed: grad_clip must be positive")
+if not 0 < number("CLIP_RATIO") < 1:
+    raise SystemExit("Config check failed: clip_ratio must be in (0, 1)")
+if number("KL_LOSS_COEF") < 0:
+    raise SystemExit("Config check failed: kl_loss_coef must be non-negative")
+if number("TEMPERATURE") <= 0:
+    raise SystemExit("Config check failed: temperature must be positive")
+if not 0 < number("TOP_P") <= 1:
+    raise SystemExit("Config check failed: top_p must be in (0, 1]")
+if os.environ["ROLLOUT_DTYPE"] != "bfloat16":
+    raise SystemExit("Config check failed: B0 pilot requires ROLLOUT_DTYPE=bfloat16")
+PY
 
   cat <<EOF
 world_size=$world_size
@@ -147,8 +194,15 @@ per_rank_train_batch_size=$((TRAIN_BATCH_SIZE / world_size))
 per_rank_expanded_rollout_batch=$((expanded_rollout_batch / world_size))
 expected_fsdp_actor_ppo_mini_batch_size_per_rank=$((PPO_MINI_BATCH_SIZE / world_size))
 expected_fsdp_actor_ppo_micro_batch_size_per_rank=$((PPO_MICRO_BATCH_SIZE / world_size))
+actor_gradient_accumulation_steps=$((PPO_MINI_BATCH_SIZE / PPO_MICRO_BATCH_SIZE))
+actor_optimizer_steps_per_training_step=$((expanded_rollout_batch / PPO_MINI_BATCH_SIZE))
 actor_lr=$ACTOR_LR
 lr_warmup_ratio=$LR_WARMUP_RATIO
+grad_clip=$GRAD_CLIP
+clip_ratio=$CLIP_RATIO
+kl_loss_coef=$KL_LOSS_COEF
+ppo_epochs=$PPO_EPOCHS
+rollout_dtype=$ROLLOUT_DTYPE
 temperature=$TEMPERATURE
 top_p=$TOP_P
 max_start_length=$MAX_START_LENGTH
@@ -207,6 +261,7 @@ check_inputs() {
   log "DATA_DIR=$DATA_DIR"
   log "RETRIEVER_URL=$RETRIEVER_URL"
   nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
+  df -h "$OUTPUT_ROOT" "$MODEL_PATH" || true
   print_model_info
   check_batch_config
 }
@@ -218,6 +273,7 @@ write_preflight() {
     git status --short 2>/dev/null || true
     print_model_info
     check_batch_config
+    df -h "$OUTPUT_ROOT" "$MODEL_PATH" || true
   } > "$run_dir/preflight.txt"
 }
 
@@ -260,13 +316,17 @@ python3 -m verl.trainer.main_ppo \\
   critic.model.path=$MODEL_PATH \\
   actor_rollout_ref.actor.optim.lr=$ACTOR_LR \\
   actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=$LR_WARMUP_RATIO \\
+  actor_rollout_ref.actor.grad_clip=$GRAD_CLIP \\
+  actor_rollout_ref.actor.clip_ratio=$CLIP_RATIO \\
+  actor_rollout_ref.actor.ppo_epochs=$PPO_EPOCHS \\
   actor_rollout_ref.actor.use_kl_loss=true \\
-  actor_rollout_ref.actor.kl_loss_coef=0.001 \\
+  actor_rollout_ref.actor.kl_loss_coef=$KL_LOSS_COEF \\
   actor_rollout_ref.actor.kl_loss_type=low_var_kl \\
   actor_rollout_ref.actor.ppo_mini_batch_size=$PPO_MINI_BATCH_SIZE \\
   actor_rollout_ref.actor.ppo_micro_batch_size=$PPO_MICRO_BATCH_SIZE \\
   actor_rollout_ref.actor.state_masking=true \\
   actor_rollout_ref.rollout.name=vllm \\
+  actor_rollout_ref.rollout.dtype=$ROLLOUT_DTYPE \\
   actor_rollout_ref.rollout.tensor_model_parallel_size=1 \\
   actor_rollout_ref.rollout.gpu_memory_utilization=0.45 \\
   actor_rollout_ref.rollout.temperature=$TEMPERATURE \\

@@ -24,12 +24,18 @@ VAL_DATA_NUM="${VAL_DATA_NUM:-100}"
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-32}"
 VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-20}"
 N_AGENT="${N_AGENT:-5}"
-PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-16}"
-PPO_MICRO_BATCH_SIZE="${PPO_MICRO_BATCH_SIZE:-4}"
-ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE="${ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE:-8}"
-REF_LOG_PROB_MICRO_BATCH_SIZE="${REF_LOG_PROB_MICRO_BATCH_SIZE:-8}"
+# With four GPUs: 160 Actor trajectories, local mini=8, local micro=2, accumulation=4.
+PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-32}"
+PPO_MICRO_BATCH_SIZE="${PPO_MICRO_BATCH_SIZE:-8}"
+ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE="${ROLLOUT_LOG_PROB_MICRO_BATCH_SIZE:-16}"
+REF_LOG_PROB_MICRO_BATCH_SIZE="${REF_LOG_PROB_MICRO_BATCH_SIZE:-16}"
 ACTOR_LR="${ACTOR_LR:-5e-7}"
 LR_WARMUP_RATIO="${LR_WARMUP_RATIO:-0.1}"
+GRAD_CLIP="${GRAD_CLIP:-1.0}"
+CLIP_RATIO="${CLIP_RATIO:-0.2}"
+KL_LOSS_COEF="${KL_LOSS_COEF:-0.001}"
+PPO_EPOCHS="${PPO_EPOCHS:-1}"
+ROLLOUT_DTYPE="${ROLLOUT_DTYPE:-bfloat16}"
 TEMPERATURE="${TEMPERATURE:-0.8}"
 TOP_P="${TOP_P:-0.95}"
 TOPK="${TOPK:-3}"
@@ -65,6 +71,7 @@ run_ppo() {
     echo "total_steps=$total_steps"
     echo "model_path=$model_path"
     git status --short 2>/dev/null || true
+    df -h "$OUTPUT_ROOT" "$model_path" || true
   } > "$run_dir/preflight.txt"
 
   log "Launching $name (${total_steps} steps, model=$model_path) → $run_dir"
@@ -93,16 +100,19 @@ run_ppo() {
     critic.model.path=$model_path \
     actor_rollout_ref.actor.optim.lr=$ACTOR_LR \
     actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=$LR_WARMUP_RATIO \
-    actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=$LR_WARMUP_RATIO \
+    actor_rollout_ref.actor.grad_clip=$GRAD_CLIP \
+    actor_rollout_ref.actor.clip_ratio=$CLIP_RATIO \
+    actor_rollout_ref.actor.ppo_epochs=$PPO_EPOCHS \
     actor_rollout_ref.actor.use_kl_loss=true \
-    actor_rollout_ref.actor.kl_loss_coef=0.001 \
+    actor_rollout_ref.actor.kl_loss_coef=$KL_LOSS_COEF \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     actor_rollout_ref.actor.ppo_mini_batch_size=$PPO_MINI_BATCH_SIZE \
     actor_rollout_ref.actor.ppo_micro_batch_size=$PPO_MICRO_BATCH_SIZE \
     actor_rollout_ref.actor.state_masking=true \
     actor_rollout_ref.rollout.name=vllm \
-    actor_rollout_ref.rollout.tensor_model_parallel_size=4 \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.15 \
+    actor_rollout_ref.rollout.dtype=$ROLLOUT_DTYPE \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.45 \
     actor_rollout_ref.rollout.temperature=$TEMPERATURE \
     actor_rollout_ref.rollout.top_p=$TOP_P \
     actor_rollout_ref.rollout.n_agent=$N_AGENT \

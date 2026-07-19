@@ -101,12 +101,14 @@ def entropy_from_logits(logits: torch.Tensor):
 
 def masked_sum(values, mask, axis=None):
     """Compute mean of tensor with a masked values."""
-    return (values * mask).sum(axis=axis)
+    masked_values = torch.where(mask.bool(), values, torch.zeros_like(values))
+    return (masked_values * mask).sum(axis=axis)
 
 
 def masked_mean(values, mask, axis=None):
     """Compute mean of tensor with a masked values."""
-    return (values * mask).sum(axis=axis) / mask.sum(axis=axis)
+    masked_values = torch.where(mask.bool(), values, torch.zeros_like(values))
+    return (masked_values * mask).sum(axis=axis) / mask.sum(axis=axis)
 
 
 def masked_var(values, mask, unbiased=True):

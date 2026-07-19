@@ -16,6 +16,7 @@ Single Process Actor
 """
 
 import itertools
+import math
 from typing import Iterable, Tuple
 
 import torch
@@ -61,6 +62,9 @@ class DataParallelPPOActor(BasePPOActor):
             entropy: # (bs, response_len)
             log_probs: # (bs, response_len)
         """
+        temperature = self._finite_number('temperature', temperature)
+        if temperature <= 0:
+            raise ValueError(f'temperature must be positive, got {temperature}')
         response_length = micro_batch['responses'].size(-1)
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
             input_ids = micro_batch['input_ids']
@@ -147,7 +151,8 @@ class DataParallelPPOActor(BasePPOActor):
             grad_norm = self.actor_module.clip_grad_norm_(max_norm=self.config.grad_clip)
         else:
             grad_norm = torch.nn.utils.clip_grad_norm_(self.actor_module.parameters(), max_norm=self.config.grad_clip)
-        if not torch.isfinite(grad_norm).all().item():
+        bad_grad = self._sync_flag(not torch.isfinite(grad_norm).all().item(), grad_norm.device)
+        if bad_grad:
             self.actor_optimizer.zero_grad()
             return grad_norm, True
         self.actor_optimizer.step()
@@ -159,6 +164,53 @@ class DataParallelPPOActor(BasePPOActor):
             if tensor is not None and not torch.isfinite(tensor).all().item():
                 return True
         return False
+
+    @staticmethod
+    def _finite_number(name, value):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f'{name} must be numeric, got {value!r}')
+        if not math.isfinite(number):
+            raise ValueError(f'{name} must be finite, got {value!r}')
+        return number
+
+    def _validate_update_config(self, temperature):
+        learning_rate = self._finite_number('optim.lr', self.config.optim.lr)
+        grad_clip = self._finite_number('grad_clip', self.config.grad_clip)
+        clip_ratio = self._finite_number('clip_ratio', self.config.clip_ratio)
+        entropy_coeff = self._finite_number('entropy_coeff', self.config.entropy_coeff)
+        temperature = self._finite_number('temperature', temperature)
+        if learning_rate <= 0 or grad_clip <= 0 or temperature <= 0:
+            raise ValueError('optim.lr, grad_clip, and temperature must be positive')
+        if not 0 < clip_ratio < 1:
+            raise ValueError(f'clip_ratio must be in (0, 1), got {clip_ratio}')
+        if entropy_coeff < 0:
+            raise ValueError(f'entropy_coeff must be non-negative, got {entropy_coeff}')
+        if self.config.ppo_epochs != 1:
+            raise ValueError('DataParallelPPOActor currently requires ppo_epochs=1')
+        if self.config.use_kl_loss:
+            kl_loss_coef = self._finite_number('kl_loss_coef', self.config.kl_loss_coef)
+            if kl_loss_coef < 0:
+                raise ValueError(f'kl_loss_coef must be non-negative, got {kl_loss_coef}')
+
+    @staticmethod
+    def _sync_flag(flag, device):
+        """Return True on every rank when any rank reports the flag."""
+        if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+            return bool(flag)
+        flag_tensor = torch.tensor(int(bool(flag)), dtype=torch.int32, device=device)
+        torch.distributed.all_reduce(flag_tensor, op=torch.distributed.ReduceOp.MAX)
+        return bool(flag_tensor.item())
+
+    @staticmethod
+    def _log_ratio_metrics(log_ratio, mask, prefix):
+        active = log_ratio.detach().masked_select(mask.bool())
+        clamp = core_algos.EXPONENTIAL_LOG_RATIO_CLAMP
+        return {
+            f'actor/{prefix}_abs_max': active.abs().max().item(),
+            f'actor/{prefix}_clamp_frac': (active.abs() > clamp).float().mean().item(),
+        }
 
     def compute_log_prob(self, data: DataProto) -> torch.Tensor:
         """Compute the log probability of the responses given input_ids, attention_mask and position_ids
@@ -217,6 +269,7 @@ class DataParallelPPOActor(BasePPOActor):
         assert self.config.ppo_mini_batch_size % self.config.ppo_micro_batch_size == 0
         self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size
         temperature = data.meta_info['temperature']  # temperature must be in the data.meta_info to avoid slient error
+        self._validate_update_config(temperature)
 
         select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages']
         if self.config.state_masking:
@@ -254,9 +307,15 @@ class DataParallelPPOActor(BasePPOActor):
                 response_mask = attention_mask[:, -response_length:]
                 if self.config.state_masking:
                     response_mask = data['loss_mask']
-                if response_mask.sum().item() <= 0:
+                local_mask_non_finite = self._has_non_finite(response_mask)
+                mask_non_finite = self._sync_flag(local_mask_non_finite, response_mask.device)
+                local_zero_mask = not local_mask_non_finite and response_mask.sum().item() <= 0
+                zero_mask = self._sync_flag(local_zero_mask, response_mask.device)
+                if mask_non_finite or zero_mask:
                     skipped_zero_mask += 1
-                    continue
+                    skipped_non_finite += int(mask_non_finite)
+                    skip_optimizer_step = True
+                    break
                 old_log_prob = data['old_log_probs']
                 advantages = data['advantages']
 
@@ -265,10 +324,15 @@ class DataParallelPPOActor(BasePPOActor):
 
                 # all return: (bsz, response_length)
                 entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
-                if self._has_non_finite(log_prob, old_log_prob, advantages):
+                ppo_log_ratio = log_prob - old_log_prob
+                bad_policy_input = self._sync_flag(
+                    self._has_non_finite(entropy, log_prob, old_log_prob, advantages, ppo_log_ratio),
+                    log_prob.device)
+                if bad_policy_input:
                     skipped_non_finite += 1
                     skip_optimizer_step = True
                     break
+                ratio_metrics = self._log_ratio_metrics(ppo_log_ratio, response_mask, 'ppo_log_ratio')
 
                 pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
                                                                               log_prob=log_prob,
@@ -283,10 +347,13 @@ class DataParallelPPOActor(BasePPOActor):
 
                 if self.config.use_kl_loss:
                     ref_log_prob = data['ref_log_prob']
-                    if self._has_non_finite(ref_log_prob):
+                    ref_log_ratio = ref_log_prob - log_prob
+                    bad_ref_input = self._sync_flag(self._has_non_finite(ref_log_prob, ref_log_ratio), log_prob.device)
+                    if bad_ref_input:
                         skipped_non_finite += 1
                         skip_optimizer_step = True
                         break
+                    ratio_metrics.update(self._log_ratio_metrics(ref_log_ratio, response_mask, 'ref_log_ratio'))
                     # compute kl loss
                     kld = core_algos.kl_penalty(logprob=log_prob,
                                                 ref_logprob=ref_log_prob,
@@ -297,7 +364,10 @@ class DataParallelPPOActor(BasePPOActor):
                     metrics['actor/kl_loss'] = kl_loss.detach().item()
                     metrics['actor/kl_coef'] = self.config.kl_loss_coef
 
-                if self._has_non_finite(pg_loss, pg_clipfrac, ppo_kl, entropy_loss, policy_loss):
+                bad_loss = self._sync_flag(
+                    self._has_non_finite(pg_loss, pg_clipfrac, ppo_kl, entropy_loss, policy_loss),
+                    log_prob.device)
+                if bad_loss:
                     skipped_non_finite += 1
                     skip_optimizer_step = True
                     break
@@ -312,6 +382,7 @@ class DataParallelPPOActor(BasePPOActor):
                     'actor/pg_clipfrac': pg_clipfrac.detach().item(),
                     'actor/ppo_kl': ppo_kl.detach().item(),
                 }
+                data.update(ratio_metrics)
                 append_to_dict(metrics, data)
 
             if skip_optimizer_step or valid_micro_batches == 0:
